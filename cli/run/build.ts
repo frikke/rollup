@@ -3,7 +3,7 @@ import ms from 'pretty-ms';
 import { rollup } from '../../src/node-entry';
 import type { MergedRollupOptions } from '../../src/rollup/types';
 import { bold, cyan, green } from '../../src/utils/colors';
-import { errorOnlyInlineSourcemapsForStdout } from '../../src/utils/error';
+import { logOnlyInlineSourcemapsForStdout } from '../../src/utils/logs';
 import relativeId from '../../src/utils/relativeId';
 import { handleError, stderr } from '../logging';
 import type { BatchWarnings } from './loadConfigFileType';
@@ -30,11 +30,11 @@ export default async function build(
 		stderr(cyan(`\n${bold(inputFiles!)} → ${bold(files.join(', '))}...`));
 	}
 
-	const bundle = await rollup(inputOptions as any);
+	await using bundle = await rollup(inputOptions as any);
 	if (useStdout) {
 		const output = outputOptions[0];
 		if (output.sourcemap && output.sourcemap !== 'inline') {
-			handleError(errorOnlyInlineSourcemapsForStdout());
+			handleError(logOnlyInlineSourcemapsForStdout());
 		}
 		const { output: outputs } = await bundle.generate(output);
 		for (const file of outputs) {
@@ -48,7 +48,6 @@ export default async function build(
 	}
 
 	await Promise.all(outputOptions.map(bundle.write));
-	await bundle.close();
 	if (!silent) {
 		warnings.flush();
 		stderr(green(`created ${bold(files.join(', '))} in ${bold(ms(Date.now() - start))}`));

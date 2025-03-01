@@ -12,7 +12,7 @@ title: Configuration Options
 
 |  |  |
 | --: | :-- |
-| Type: | `(string \| RegExp)[]\| RegExp\| string\| (id: string, parentId: string, isResolved: boolean) => boolean` |
+| Type: | `(string \| RegExp)[] \| RegExp \| string \| (id: string, parentId: string, isResolved: boolean) => boolean` |
 | CLI: | `-e`/`--external <external-id,another-external-id,...>` |
 
 Either a function that takes an `id` and returns `true` (external) or `false` (not external), or an `Array` of module IDs, or regular expressions to match module IDs, that should remain external to the bundle. Can also be just a single ID or regular expression. The matched IDs should be either:
@@ -20,10 +20,13 @@ Either a function that takes an `id` and returns `true` (external) or `false` (n
 1. the name of an external dependency, exactly the way it is written in the import statement. I.e. to mark `import "dependency.js"` as external, use `"dependency.js"` while to mark `import "dependency"` as external, use `"dependency"`.
 2. a resolved ID (like an absolute path to a file).
 
-```js
+```js twoslash
 // rollup.config.js
 import { fileURLToPath } from 'node:url';
 
+// ---cut-start---
+/** @type {import('rollup').RollupOptions} */
+// ---cut-end---
 export default {
 	//...,
 	external: [
@@ -82,41 +85,51 @@ The conversion back to a relative import is done as if `output.file` or `output.
 
 ### input
 
-|       |                                                         |
-| ----: | :------------------------------------------------------ |
-| Type: | `string \| string []\| { [entryName: string]: string }` |
-|  CLI: | `-i`/`--input <filename>`                               |
+|       |                                                          |
+| ----: | :------------------------------------------------------- |
+| Type: | `string \| string [] \| { [entryName: string]: string }` |
+|  CLI: | `-i`/`--input <filename>`                                |
 
 The bundle's entry point(s) (e.g. your `main.js` or `app.js` or `index.js`). If you provide an array of entry points or an object mapping names to entry points, they will be bundled to separate output chunks. Unless the [`output.file`](#output-file) option is used, generated chunk names will follow the [`output.entryFileNames`](#output-entryfilenames) option. When using the object form, the `[name]` portion of the file name will be the name of the object property while for the array form, it will be the file name of the entry point.
 
 Note that it is possible when using the object form to put entry points into different sub-folders by adding a `/` to the name. The following will generate at least two entry chunks with the names `entry-a.js` and `entry-b/index.js`, i.e. the file `index.js` is placed in the folder `entry-b`:
 
-```js
+```js twoslash
 // rollup.config.js
+// ---cut-start---
+/** @type {import('rollup').RollupOptions} */
+// ---cut-end---
 export default {
-  ...,
-  input: {
-    a: 'src/main-a.js',
-    'b/index': 'src/main-b.js'
-  },
-  output: {
-    ...,
-    entryFileNames: 'entry-[name].js'
-  }
+	// ...
+	input: {
+		a: 'src/main-a.js',
+		'b/index': 'src/main-b.js'
+	},
+	output: {
+		// ...
+		entryFileNames: 'entry-[name].js'
+	}
 };
 ```
 
 If you want to convert a set of files to another format while maintaining the file structure and export signatures, the recommended way—instead of using [`output.preserveModules`](#output-preservemodules) that may tree-shake exports as well as emit virtual files created by plugins—is to turn every file into an entry point. You can do so dynamically e.g. via the `glob` package:
 
-```js
-import glob from 'glob';
+```ts twoslash
+// @filename: glob.d.ts
+declare module 'glob' {
+	export function globSync(pattern: string): string[];
+}
+
+// @filename: index.js
+// ---cut---
+import { globSync } from 'glob';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 export default {
 	input: Object.fromEntries(
-		glob.sync('src/**/*.js').map(file => [
-			// This remove `src/` as well as the file extension from each
+		globSync('src/**/*.js').map(file => [
+			// This removes `src/` as well as the file extension from each
 			// file, so e.g. src/nested/foo.js becomes nested/foo
 			path.relative(
 				'src',
@@ -138,7 +151,7 @@ The option can be omitted if some plugin emits at least one chunk (using [`this.
 
 When using the command line interface, multiple inputs can be provided by using the option multiple times. When provided as the first options, it is equivalent to not prefix them with `--input`:
 
-```sh
+```shell
 rollup --format es --input src/entry1.js --input src/entry2.js
 # is equivalent to
 rollup src/entry1.js src/entry2.js --format es
@@ -146,14 +159,190 @@ rollup src/entry1.js src/entry2.js --format es
 
 Chunks can be named by adding an `=` to the provided value:
 
-```sh
+```shell
 rollup main=src/entry1.js other=src/entry2.js --format es
 ```
 
 File names containing spaces can be specified by using quotes:
 
-```sh
+```shell
 rollup "main entry"="src/entry 1.js" "src/other entry.js" --format es
+```
+
+### jsx
+
+|          |                                    |
+| -------: | :--------------------------------- |
+|    Type: | `false \| JsxPreset \| JsxOptions` |
+|     CLI: | `--jsx <preset>`/`--no-jsx`        |
+| Default: | `false`                            |
+
+```typescript
+type JsxPreset = 'react' | 'react-jsx' | 'preserve' | 'preserve-react';
+
+type JsxOptions =
+	| {
+			mode: 'preserve';
+			factory: string | null;
+			fragment: string | null;
+			importSource: string | null;
+			preset: JsxPreset | null;
+	  }
+	| {
+			mode: 'classic';
+			factory: string;
+			fragment: string;
+			importSource: string | null;
+			preset: JsxPreset | null;
+	  }
+	| {
+			mode: 'automatic';
+			factory: string;
+			importSource: string;
+			jsxImportSource: string;
+			preset: JsxPreset | null;
+	  };
+```
+
+Allows Rollup to process JSX syntax to either preserve or transform it depending on the [`jsx.mode`](#jsx-mode). If set to `false`, an error will be thrown if JSX syntax is encountered. You may also choose a preset that will set all options together:
+
+- `"react"`: For transpiling JSX to `React.createElement` calls, where `React` is the default import from `"react"`. This is similar to setting `"jsx": "react"` in TypeScript compiler options.
+  ```js
+  ({
+  	mode: 'classic',
+  	factory: 'React.createElement',
+  	fragment: 'React.Fragment',
+  	importSource: 'react'
+  });
+  ```
+- `"react-jsx"`: This will use the new optimized React transformation introduced with React 17 and is similar to setting `"jsx": "react-jsx"` in TypeScript compiler options.
+  ```js
+  ({
+  	mode: 'automatic',
+  	factory: 'React.createElement',
+  	importSource: 'react',
+  	jsxImportSource: 'react/jsx-runtime'
+  });
+  ```
+- `"preserve"`: This will preserve JSX in the output. This will still tree-shake unused JSX code and may rename JSX identifiers if there are conflicts in the output.
+  ```js
+  ({
+  	mode: 'preserve',
+  	factory: null,
+  	fragment: null,
+  	importSource: null
+  });
+  ```
+- `"preserve-react"`: This will preserve JSX in the output but ensure that the default export of `"react"` is in scope as a variable named `React`.
+  ```js
+  ({
+  	mode: 'preserve',
+  	factory: 'React.createElement',
+  	fragment: 'React.Fragment',
+  	importSource: 'react'
+  });
+  ```
+
+#### jsx.mode
+
+|          |                                          |
+| -------: | :--------------------------------------- |
+|    Type: | `"preserve" \| "classic" \| "automatic"` |
+|     CLI: | `--jsx.mode <mode>`                      |
+| Default: | `"classic"`                              |
+
+This will determine how JSX is processed:
+
+- `"preserve"`: Will keep JSX syntax in the output.
+- `"classic"`: This will perform a JSX transformation as it is needed by older React versions or other frameworks like for instance [Preact](https://preactjs.com). As an example, here is how you would configure jsx for Preact:
+
+  ```js
+  ({
+  	mode: 'classic',
+  	factory: 'h',
+  	fragment: 'Fragment',
+  	importSource: 'preact'
+  });
+  ```
+
+  This would perform the following transformation:
+
+  ```jsx
+  // input
+  console.log(<div>hello</div>);
+
+  // output
+  import { h } from 'preact';
+  console.log(/*#__PURE__*/ h('div', null, 'hello'));
+  ```
+
+- `"automatic"`: This will perform a JSX transformation using the [new JSX transform](https://legacy.reactjs.org/blog/2020/09/22/introducing-the-new-jsx-transform.html) introduced with React 17. In this mode, Rollup will try to import helpers from [`jsx.jsxImportSource`](#jsx-jsximportsource) to transform JSX. As there are certain edge cases, this mode may still fall back to using the classic transformations when [using the `key` property together with spread attributes](https://github.com/facebook/react/issues/20031#issuecomment-710346866). To this end, you can still specify `jsx.importSource`, `jsx.factory`, and `jsx.fragment` to configure classic mode.
+
+#### jsx.factory
+
+|          |                                   |
+| -------: | :-------------------------------- |
+|    Type: | `string \| null`                  |
+|     CLI: | `--jsx.factory <factory>`         |
+| Default: | `"React.createElement"` or `null` |
+
+The function Rollup uses to create JSX elements in `"classic"` mode or as a fallback in `"automatic"` mode. This is usually `React.createElement` for React or `h` for other frameworks. In `"preserve"` mode, this will ensure that the factory is in scope if [`jsx.importSource`](#jsx-importsource) is specified, or otherwise that a global variable of the same name would not be overridden by local variables. Only in `"preserve"` mode it is possible to set this value to `null`, in which case Rollup will not take care to keep any particular factory function in scope.
+
+If the value contains a `"."` like `React.createElement` and an `jsx.importSource` is specified, Rollup will assume that the left part, e.g. `React`, refers to the default export of the `jsx.importSource`. Otherwise, Rollup assumes it is a named export.
+
+#### jsx.fragment
+
+|          |                              |
+| -------: | :--------------------------- |
+|    Type: | `string \| null`             |
+|     CLI: | `--jsx.fragment <fragment>`  |
+| Default: | `"React.Fragment"` or `null` |
+
+The element function Rollup uses to create JSX fragments. This is usually `React.Fragment` for React or `Fragment` for other frameworks. In `"preserve"` mode, this will ensure that the fragment is in scope if [`jsx.importSource`](#jsx-importsource) is specified, or otherwise that a global variable of the same name would not be overridden by local variables. Only in `"preserve"` mode it is possible to set this value to `null`, in which case Rollup will not take care to keep any particular fragment function in scope.
+
+If the value contains a `"."` like `React.Fragment` and an `jsx.importSource` is specified, Rollup will assume that the left part, e.g. `React`, refers to the default export of the `jsx.importSource`. Otherwise, Rollup assumes it is a named export.
+
+#### jsx.importSource
+
+|          |                                |
+| -------: | :----------------------------- |
+|    Type: | `string \| null`               |
+|     CLI: | `--jsx.importSource <library>` |
+| Default: | `null`                         |
+
+Where to import the element factory function and/or the fragment element from. If left to `null`, Rollup will assume that [`jsx.factory`](#jsx-factory) and [`jsx.fragment`](#jsx-fragment) refer to global variables and makes sure they are not shadowed by local variables.
+
+#### jsx.jsxImportSource
+
+|          |                                   |
+| -------: | :-------------------------------- |
+|    Type: | `string`                          |
+|     CLI: | `--jsx.jsxImportSource <library>` |
+| Default: | `"react/jsx-runtime"`             |
+
+When using `"automatic"` mode, this will specify from where to import the `jsx`, `jsxs` and `Fragment` helpers needed for that transformation. It is not possible to get those from a global variable.
+
+#### jsx.preset
+
+|       |                        |
+| ----: | :--------------------- |
+| Type: | JsxPreset              |
+|  CLI: | `--jsx.preset <value>` |
+
+Allows choosing one of the presets listed above while overriding some options.
+
+```js twoslash
+// ---cut-start---
+/** @type {import('rollup').RollupOptions} */
+// ---cut-end---
+export default {
+	jsx: {
+		preset: 'react',
+		importSource: 'preact',
+		factory: 'h'
+	}
+	// ...
+};
 ```
 
 ### output.dir
@@ -195,7 +384,7 @@ Specifies the format of the generated bundle. One of the following:
 
 |  |  |
 | --: | :-- |
-| Type: | `{ [id: string]: string }\| ((id: string) => string)` |
+| Type: | `{ [id: string]: string } \| ((id: string) => string)` |
 | CLI: | `-g`/`--globals <external-id:variableName,another-external-id:anotherVariableName,...>` |
 
 Specifies `id: variableName` pairs necessary for external imports in `umd`/`iife` bundles. For example, in a case like this…
@@ -206,18 +395,21 @@ import $ from 'jquery';
 
 …we want to tell Rollup that `jquery` is external and the `jquery` module ID equates to the global `$` variable:
 
-```js
+```js twoslash
 // rollup.config.js
+// ---cut-start---
+/** @type {import('rollup').RollupOptions} */
+// ---cut-end---
 export default {
-  ...,
-  external: ['jquery'],
-  output: {
-    format: 'iife',
-    name: 'MyBundle',
-    globals: {
-      jquery: '$'
-    }
-  }
+	// ...
+	external: ['jquery'],
+	output: {
+		format: 'iife',
+		name: 'MyBundle',
+		globals: {
+			jquery: '$'
+		}
+	}
 };
 
 /*
@@ -237,7 +429,7 @@ rollup -i src/main.js ... -g jquery:$,underscore:_
 
 To tell Rollup that a local file should be replaced by a global variable, use an absolute id:
 
-```js
+```js twoslash
 // rollup.config.js
 import { fileURLToPath } from 'node:url';
 const externalId = fileURLToPath(
@@ -247,6 +439,9 @@ const externalId = fileURLToPath(
 	)
 );
 
+// ---cut-start---
+/** @type {import('rollup').RollupOptions} */
+// ---cut-end---
 export default {
 	//...,
 	external: [externalId],
@@ -269,15 +464,18 @@ export default {
 
 Necessary for `iife`/`umd` bundles that exports values in which case it is the global variable name representing your bundle. Other scripts on the same page can use this variable name to access the exports of your bundle.
 
-```js
+```js twoslash
 // rollup.config.js
+// ---cut-start---
+/** @type {import('rollup').RollupOptions} */
+// ---cut-end---
 export default {
-  ...,
-  output: {
-    file: 'bundle.js',
-    format: 'iife',
-    name: 'MyBundle'
-  }
+	// ...
+	output: {
+		file: 'bundle.js',
+		format: 'iife',
+		name: 'MyBundle'
+	}
 };
 
 // var MyBundle = (function () {...
@@ -307,10 +505,13 @@ Not every plugin can be used here. `output.plugins` is limited to plugins that o
 
 The following will add minification to one of the outputs:
 
-```js
+```js twoslash
 // rollup.config.js
 import terser from '@rollup/plugin-terser';
 
+// ---cut-start---
+/** @type {import('rollup').RollupOptions} */
+// ---cut-end---
 export default {
 	input: 'main.js',
 	output: [
@@ -333,15 +534,18 @@ export default {
 | ----: | :----------------------------------------- |
 | Type: | `MaybeArray<MaybePromise<Plugin \| void>>` |
 
-See [Using plugins](../tutorial/index.md#using-plugins) for more information on how to use plugins and [Plugins](../plugin-development/index.md) on how to write your own (try it out, it's not as difficult as it may sound and very much extends what you can do with Rollup). For plugins imported from packages, remember to call the imported plugin function (i.e. `commonjs()`, not just `commonjs`). Falsy plugins will be ignored, which can be used to easily activate or deactivate plugins. Nested plugins will be flatten. Async plugins will be awaited and resolved.
+See [Using plugins](../tutorial/index.md#using-plugins) for more information on how to use plugins and [Plugins](../plugin-development/index.md) on how to write your own (try it out, it's not as difficult as it may sound and very much extends what you can do with Rollup). For plugins imported from packages, remember to call the imported plugin function (i.e. `commonjs()`, not just `commonjs`). Falsy plugins will be ignored, which can be used to easily activate or deactivate plugins. Nested plugins will be flattened. Async plugins will be awaited and resolved.
 
-```js
+```js twoslash
 // rollup.config.js
 import resolve from '@rollup/plugin-node-resolve';
 import commonjs from '@rollup/plugin-commonjs';
 
 const isProduction = process.env.NODE_ENV === 'production';
 
+// ---cut-start---
+/** @type {Promise<import('rollup').RollupOptions>} */
+// ---cut-end---
 export default (async () => ({
 	input: 'main.js',
 	plugins: [
@@ -369,8 +573,11 @@ export default (async () => ({
 
 The `cache` property of a previous bundle. Use it to speed up subsequent builds in watch mode — Rollup will only reanalyse the modules that have changed. Setting this option explicitly to `false` will prevent generating the `cache` property on the bundle and also deactivate caching for plugins.
 
-```js
+```js twoslash
 const rollup = require('rollup');
+// ---cut-start---
+/** @type {import('rollup').RollupCache | undefined} */
+// ---cut-end---
 let cache;
 
 async function buildWithCache() {
@@ -392,11 +599,23 @@ buildWithCache()
 	});
 ```
 
+### logLevel
+
+|          |                        |
+| -------: | :--------------------- |
+|    Type: | `LogLevel \| "silent"` |
+|     CLI: | `--logLevel <level>`   |
+| Default: | `"info"`               |
+
+Determine which logs to process. See [`onLog`](#onlog) for the available log levels. The default `logLevel` of `"info"` means that info and warnings logs will be processed while debug logs will be swallowed, which means that they are neither passed to plugin [`onLog`](../plugin-development/index.md#onlog) hooks nor the `onLog` option or printed to the console.
+
+When using the CLI, errors will still be printed to the console as they are not processed via the logging system. See the [`--silent`](../command-line-interface/index.md#silent) flag for how to suppress error logs.
+
 ### makeAbsoluteExternalsRelative
 
 |  |  |
 | --: | :-- |
-| Type: | `boolean\| "ifRelativeSource"` |
+| Type: | `boolean \| "ifRelativeSource"` |
 | CLI: | `--makeAbsoluteExternalsRelative`/`--no-makeAbsoluteExternalsRelative` |
 | Default: | `"ifRelativeSource"` |
 
@@ -422,96 +641,161 @@ Note that when a relative path is directly marked as "external" using the [`exte
 
 Limits the number of files rollup will open in parallel when reading modules or writing chunks. Without a limit or with a high enough value, builds can fail with an "EMFILE: too many open files". This depends on how many open file handles the operating system allows.
 
-### onwarn
+### onLog
 
 |  |  |
 | --: | :-- |
-| Type: | `(warning: RollupWarning, defaultHandler: (warning: string \| RollupWarning) => void) => void;` |
+| Type: | `(level: LogLevel, log: RollupLog, defaultHandler: LogOrStringHandler) => void;` |
 
-A function that will intercept warning messages. If not supplied, warnings will be deduplicated and printed to the console. When using the [`--silent`](../command-line-interface/index.md#silent) CLI option, this handler is the only way to get notified about warnings.
+```typescript
+type LogLevel = 'warn' | 'info' | 'debug';
 
-The function receives two arguments: the warning object and the default handler. Warnings objects have, at a minimum, a `code` and a `message` property, allowing you to control how different kinds of warnings are handled. Other properties are added depending on the type of warning. See [`utils/error.ts`](https://github.com/rollup/rollup/blob/master/src/utils/error.ts) for a complete list of errors and warnings together with their codes and properties.
+type LogOrStringHandler = (
+	level: LogLevel | 'error',
+	log: string | RollupLog
+) => void;
 
-```js
+// All possible properties, actual properties depend on log
+interface RollupLog {
+	binding?: string;
+	cause?: Error;
+	code?: string;
+	exporter?: string;
+	frame?: string; // always printed by the CLI
+	hook?: string;
+	id?: string; // always printed by the CLI
+	ids?: string[];
+	loc?: {
+		column: number;
+		file?: string;
+		line: number;
+	}; // always printed by the CLI if id is present
+	message: string; // the actual message, always printed by the CLI
+	meta?: any; // add custom plugin properties to logs
+	names?: string[];
+	plugin?: string; // added by Rollup for plugin logs, only printed for warnings
+	pluginCode?: string; // added by Rollup for plugin logs that contain a code
+	pos?: number;
+	reexporter?: string;
+	stack?: string; // url for additional information, always printed by the CLI
+	url?: string;
+}
+```
+
+A function that intercepts log messages. If not supplied, logs are printed to the console, whereby Rollup CLI aggregates certain `"warn"` logs and prints consolidated warnings after the build to reduce noise. This handler is also triggered when using the [`--silent`](../command-line-interface/index.md#silent) CLI option.
+
+The function receives three arguments: the log level, the log object and the default handler. Log objects have, at a minimum, a `code` and a `message` property, allowing you to control how different kinds of logs are handled. Other properties are added depending on the type of log. See [`utils/logs.ts`](https://github.com/rollup/rollup/blob/master/src/utils/logs.ts) for a complete list of built-in errors and logs together with their codes and properties.
+
+If the default handler is not invoked, the log will not be printed to the console. Moreover, you can change the log level by invoking the default handler with a different level. Using the additional level `"error"` will turn the log into a thrown error that has all properties of the log attached.
+
+```js twoslash
 // rollup.config.js
+// ---cut-start---
+/** @type {import('rollup').RollupOptions} */
+// ---cut-end---
 export default {
-	//...,
-	onwarn(warning, warn) {
-		// skip certain warnings
-		if (warning.code === 'UNUSED_EXTERNAL_IMPORT') return;
-
-		// throw on others
-		// Using Object.assign over new Error(warning.message) will make
-		// the CLI print additional information such as warning location
-		// and help url.
-		if (warning.code === 'MISSING_EXPORT')
-			throw Object.assign(new Error(), warning);
-
-		// Use default for everything else
-		warn(warning);
+	//...
+	onLog(level, log, handler) {
+		if (log.code === 'CIRCULAR_DEPENDENCY') {
+			return; // Ignore circular dependency warnings
+		}
+		if (level === 'warn') {
+			handler('error', log); // turn other warnings into errors
+		} else {
+			handler(level, log); // otherwise, just print the log
+		}
 	}
 };
 ```
 
-Many warnings also have a `loc` property and a `frame` allowing you to locate the source of the warning:
+This handler will not be invoked if logs are filtered out by the [`logLevel`](#loglevel) option. I.e. by default, `"debug"` logs will be swallowed.
 
-```js
+Some logs also have a `loc` property and a `frame` allowing you to locate the source of the log:
+
+```js twoslash
 // rollup.config.js
+// ---cut-start---
+/** @type {import('rollup').RollupOptions} */
+// ---cut-end---
 export default {
-  ...,
-  onwarn ({ loc, frame, message }) {
-    if (loc) {
-      console.warn(`${loc.file} (${loc.line}:${loc.column}) ${message}`);
-      if (frame) console.warn(frame);
-    } else {
-      console.warn(message);
-    }
-  }
+	//...
+	onLog(level, { loc, frame, message }) {
+		if (loc) {
+			console.warn(`${loc.file} (${loc.line}:${loc.column}) ${message}`);
+			if (frame) console.warn(frame);
+		} else {
+			console.warn(message);
+		}
+	}
 };
 ```
 
+### onwarn
+
+|  |  |
+| --: | :-- |
+| Type: | `(warning: RollupLog, defaultHandler: (warning: string \| RollupLog) => void) => void;` |
+
+A function that will intercept warning messages. It is very similar to [`onLog`](#onlog) but only receives warnings. If the default handler is invoked, the log will be handled as a warning. If both an `onLog` and `onwarn` handler are provided, the `onwarn` handler will only be invoked if `onLog` calls its default handler with a `level` of `warn`.
+
+See [`onLog`](#onlog) for more information.
+
 ### output.assetFileNames
 
-|          |                                               |
-| -------: | :-------------------------------------------- |
-|    Type: | `string\| ((assetInfo: AssetInfo) => string)` |
-|     CLI: | `--assetFileNames <pattern>`                  |
-| Default: | `"assets/[name]-[hash][extname]"`             |
+|          |                                                       |
+| -------: | :---------------------------------------------------- |
+|    Type: | `string \| ((assetInfo: PreRenderedAsset) => string)` |
+|     CLI: | `--assetFileNames <pattern>`                          |
+| Default: | `"assets/[name]-[hash][extname]"`                     |
+
+```typescript
+interface PreRenderedAsset {
+	names: string[];
+	originalFileNames: string[];
+	source: string | Uint8Array;
+	type: 'asset';
+}
+```
 
 The pattern to use for naming custom emitted assets to include in the build output, or a function that is called per asset to return such a pattern. Patterns support the following placeholders:
 
 - `[extname]`: The file extension of the asset including a leading dot, e.g. `.css`.
 - `[ext]`: The file extension without a leading dot, e.g. `css`.
-- `[hash]`: A hash based on the content of the asset. You can also set a specific hash length via e.g. `[hash:10]`.
+- `[hash]`: A hash based on the content of the asset. You can also set a specific hash length via e.g. `[hash:10]`. By default, it will create a base-64 hash. If you need a reduced character sets, see [`output.hashCharacters`](#output-hashcharacters)
 - `[name]`: The file name of the asset excluding any extension.
 
-Forward slashes `/` can be used to place files in sub-directories. When using a function, `assetInfo` is a reduced version of the one in [`generateBundle`](../plugin-development/index.md#generatebundle) without the `fileName`. See also [`output.chunkFileNames`](#output-chunkfilenames), [`output.entryFileNames`](#output-entryfilenames).
+Forward slashes `/` can be used to place files in sub-directories. When using a function, `PreRenderedAsset` is a reduced version of the `OutputAsset` type in [`generateBundle`](../plugin-development/index.md#generatebundle) without the `fileName`. See also [`output.chunkFileNames`](#output-chunkfilenames), [`output.entryFileNames`](#output-entryfilenames).
 
 ### output.banner/output.footer
 
-|       |                                                              |
-| ----: | :----------------------------------------------------------- |
-| Type: | `string \| ((chunk: ChunkInfo) => string\| Promise<string>)` |
-|  CLI: | `--banner`/`--footer <text>`                                 |
+|  |  |
+| --: | :-- |
+| Type: | `string \| ((chunk: RenderedChunk) => string \| Promise<string>)` |
+| CLI: | `--banner`/`--footer <text>` |
+
+See the [`renderChunk`](../plugin-development/index.md#renderchunk) hook for the `RenderedChunk` type.
 
 A string to prepend/append to the bundle. You can also supply a function that returns a `Promise` that resolves to a `string` to generate it asynchronously (Note: `banner` and `footer` options will not break sourcemaps).
 
-If you supply a function, `chunk` contains additional information about the chunk using the same `ChunkInfo` type as the [`generateBundle`](../plugin-development/index.md#generatebundle) hook with the following differences:
+If you supply a function, `chunk` contains additional information about the chunk using a `RenderedChunk` type that is a reduced version of the `OutputChunk` type used in [`generateBundle`](../plugin-development/index.md#generatebundle) hook with the following differences:
 
 - `code` and `map` are not set as the chunk has not been rendered yet.
 - all referenced chunk file names that would contain hashes will contain hash placeholders instead. This includes `fileName`, `imports`, `importedBindings`, `dynamicImports` and `implicitlyLoadedBefore`. When you use such a placeholder file name or part of it in the code returned from this option, Rollup will replace the placeholder with the actual hash before `generateBundle`, making sure the hash reflects the actual content of the final generated chunk including all referenced file hashes.
 
 `chunk` is mutable and changes applied in this hook will propagate to other plugins and to the generated bundle. That means if you add or remove imports or exports in this hook, you should update `imports`, `importedBindings` and/or `exports`.
 
-```js
+```js twoslash
 // rollup.config.js
+// ---cut-start---
+/** @type {import('rollup').RollupOptions} */
+// ---cut-end---
 export default {
-  ...,
-  output: {
-    ...,
-    banner: '/* my-library version ' + version + ' */',
-    footer: '/* follow me on Twitter! @rich_harris */'
-  }
+	// ...
+	output: {
+		// ...
+		banner: '/* my-library version ' + version + ' */',
+		footer: '/* follow me on Twitter! @rich_harris */'
+	}
 };
 ```
 
@@ -519,19 +803,32 @@ See also [`output.intro/output.outro`](#output-intro-output-outro).
 
 ### output.chunkFileNames
 
-|          |                                                |
-| -------: | :--------------------------------------------- |
-|    Type: | `string \| ((chunkInfo: ChunkInfo) => string)` |
-|     CLI: | `--chunkFileNames <pattern>`                   |
-| Default: | `"[name]-[hash].js"`                           |
+|          |                                                       |
+| -------: | :---------------------------------------------------- |
+|    Type: | `string \| ((chunkInfo: PreRenderedChunk) => string)` |
+|     CLI: | `--chunkFileNames <pattern>`                          |
+| Default: | `"[name]-[hash].js"`                                  |
+
+```typescript
+interface PreRenderedChunk {
+	exports: string[];
+	facadeModuleId: string | null;
+	isDynamicEntry: boolean;
+	isEntry: boolean;
+	isImplicitEntry: boolean;
+	moduleIds: string[];
+	name: string;
+	type: 'chunk';
+}
+```
 
 The pattern to use for naming shared chunks created when code-splitting, or a function that is called per chunk to return such a pattern. Patterns support the following placeholders:
 
 - `[format]`: The rendering format defined in the output options, e.g. `es` or `cjs`.
-- `[hash]`: A hash based only on the content of the final generated chunk, including transformations in [`renderChunk`](../plugin-development/index.md#renderchunk) and any referenced file hashes. You can also set a specific hash length via e.g. `[hash:10]`.
+- `[hash]`: A hash based only on the content of the final generated chunk, including transformations in [`renderChunk`](../plugin-development/index.md#renderchunk) and any referenced file hashes. You can also set a specific hash length via e.g. `[hash:10]`. By default, it will create a base-64 hash. If you need a reduced character sets, see [`output.hashCharacters`](#output-hashcharacters)
 - `[name]`: The name of the chunk. This can be explicitly set via the [`output.manualChunks`](#output-manualchunks) option or when the chunk is created by a plugin via [`this.emitFile`](../plugin-development/index.md#this-emitfile). Otherwise, it will be derived from the chunk contents.
 
-Forward slashes `/` can be used to place files in sub-directories. When using a function, `chunkInfo` is a reduced version of the one in [`generateBundle`](../plugin-development/index.md#generatebundle) without properties that depend on file names and no information about the rendered modules as rendering only happens after file names have been generated. You can however access a list of included `moduleIds`. See also [`output.assetFileNames`](#output-assetfilenames), [`output.entryFileNames`](#output-entryfilenames).
+Forward slashes `/` can be used to place files in sub-directories. When using a function, `PreRenderedChunk` is a reduced version of the `OutputChunk` type in [`generateBundle`](../plugin-development/index.md#generatebundle) without properties that depend on file names and no information about the rendered modules as rendering only happens after file names have been generated. You can however access a list of included `moduleIds`. See also [`output.assetFileNames`](#output-assetfilenames), [`output.entryFileNames`](#output-entryfilenames).
 
 ### output.compact
 
@@ -553,7 +850,7 @@ This will minify the wrapper code generated by rollup. Note that this does not a
 
 While CommonJS output originally supported only `require(…)` to import dependencies, recent Node versions also started to support `import(…)`, which is the only way to import ES modules from CommonJS files. If this option is `true`, which is the default, Rollup will keep external dynamic imports as `import(…)` expressions in CommonJS output. Set this to `false` to rewrite dynamic imports using `require(…)` syntax.
 
-```js
+```js twoslash
 // input
 import('external').then(console.log);
 
@@ -577,7 +874,7 @@ function _interopNamespaceDefault(e) {
 								get: function () {
 									return e[k];
 								}
-						  }
+							}
 				);
 			}
 		});
@@ -595,19 +892,21 @@ Promise.resolve()
 
 ### output.entryFileNames
 
-|          |                                                |
-| -------: | :--------------------------------------------- |
-|    Type: | `string \| ((chunkInfo: ChunkInfo) => string)` |
-|     CLI: | `--entryFileNames <pattern>`                   |
-| Default: | `"[name].js"`                                  |
+|          |                                                       |
+| -------: | :---------------------------------------------------- |
+|    Type: | `string \| ((chunkInfo: PreRenderedChunk) => string)` |
+|     CLI: | `--entryFileNames <pattern>`                          |
+| Default: | `"[name].js"`                                         |
+
+See [`output.chunkFileNames`](#output-chunkfilenames) for the `PreRenderedChunk` type.
 
 The pattern to use for chunks created from entry points, or a function that is called per entry chunk to return such a pattern. Patterns support the following placeholders:
 
 - `[format]`: The rendering format defined in the output options, e.g. `es` or `cjs`.
-- `[hash]`: A hash based only on the content of the final generated entry chunk, including transformations in [`renderChunk`](../plugin-development/index.md#renderchunk) and any referenced file hashes. You can also set a specific hash length via e.g. `[hash:10]`.
+- `[hash]`: A hash based only on the content of the final generated entry chunk, including transformations in [`renderChunk`](../plugin-development/index.md#renderchunk) and any referenced file hashes. You can also set a specific hash length via e.g. `[hash:10]`. By default, it will create a base-64 hash. If you need a reduced character sets, see [`output.hashCharacters`](#output-hashcharacters)
 - `[name]`: The file name (without extension) of the entry point, unless the object form of input was used to define a different name.
 
-Forward slashes `/` can be used to place files in sub-directories. When using a function, `chunkInfo` is a reduced version of the one in [`generateBundle`](../plugin-development/index.md#generatebundle) without properties that depend on file names and no information about the rendered modules as rendering only happens after file names have been generated. You can however access a list of included `moduleIds`. See also [`output.assetFileNames`](#output-assetfilenames), [`output.chunkFileNames`](#output-chunkfilenames).
+Forward slashes `/` can be used to place files in sub-directories. When using a function, `PreRenderedChunk` is a reduced version of the `OutputChunk` type in [`generateBundle`](../plugin-development/index.md#generatebundle) without properties that depend on file names and no information about the rendered modules as rendering only happens after file names have been generated. You can however access a list of included `moduleIds`. See also [`output.assetFileNames`](#output-assetfilenames), [`output.chunkFileNames`](#output-chunkfilenames).
 
 This pattern will also be used for every file when setting the [`output.preserveModules`](#output-preservemodules) option. Note that in this case, `[name]` will include the relative path from the output root and possibly the original file extension if it was not one of `.js`, `.jsx`, `.mjs`, `.cjs`, `.ts`, `.tsx`, `.mts`, or `.cts`.
 
@@ -621,21 +920,21 @@ This pattern will also be used for every file when setting the [`output.preserve
 
 Whether to extend the global variable defined by the `name` option in `umd` or `iife` formats. When `true`, the global variable will be defined as `(global.name = global.name || {})`. When false, the global defined by `name` will be overwritten like `(global.name = {})`.
 
-### output.externalImportAssertions
+### output.externalImportAttributes
 
 |          |                                                              |
 | -------: | :----------------------------------------------------------- |
 |    Type: | `boolean`                                                    |
-|     CLI: | `--externalImportAssertions`/`--no-externalImportAssertions` |
+|     CLI: | `--externalImportAttributes`/`--no-externalImportAttributes` |
 | Default: | `true`                                                       |
 
-Whether to add import assertions to external imports in the output if the output format is `es`. By default, assertions are taken from the input files, but plugins can add or remove assertions later. E.g. `import "foo" assert {type: "json"}` will cause the same import to appear in the output unless the option is set to `false`. Note that all imports of a module need to have consistent assertions, otherwise a warning is emitted.
+Whether to add import attributes to external imports in the output if the output format is `es` or `cjs`. By default, attributes are taken from the input files, but plugins can add or remove attributes later. E.g. `import "foo" assert {type: "json"}` will cause the same import to appear in the output unless the option is set to `false`. Note that all imports of a module need to have consistent attributes, otherwise a warning is emitted.
 
 ### output.generatedCode
 
 |  |  |
 | --: | :-- |
-| Type: | `"es5" \| "es2015"\| { arrowFunctions?: boolean, constBindings?: boolean, objectShorthand?: boolean, preset?: "es5"\| "es2015", reservedNamesAsProps?: boolean, symbols?: boolean }` |
+| Type: | `"es5" \| "es2015" \| { arrowFunctions?: boolean, constBindings?: boolean, objectShorthand?: boolean, preset?: "es5" \| "es2015", reservedNamesAsProps?: boolean, symbols?: boolean }` |
 | CLI: | `--generatedCode <preset>` |
 | Default: | `"es5"` |
 
@@ -664,7 +963,7 @@ Whether to use arrow functions for auto-generated code snippets. Note that in ce
 
 This will use `const` instead of `var` in certain places and helper functions. This will allow Rollup to generate more efficient helpers due to block scoping.
 
-```js
+```js twoslash
 // input
 export * from 'external';
 
@@ -672,7 +971,7 @@ export * from 'external';
 var external = require('external');
 
 Object.keys(external).forEach(function (k) {
-	if (k !== 'default' && !exports.hasOwnProperty(k))
+	if (k !== 'default' && !Object.prototype.hasOwnProperty.call(exports, k))
 		Object.defineProperty(exports, k, {
 			enumerable: true,
 			get: function () {
@@ -685,7 +984,7 @@ Object.keys(external).forEach(function (k) {
 const external = require('external');
 
 for (const k in external) {
-	if (k !== 'default' && !exports.hasOwnProperty(k))
+	if (k !== 'default' && !Object.prototype.hasOwnProperty.call(exports, k))
 		Object.defineProperty(exports, k, {
 			enumerable: true,
 			get: () => external[k]
@@ -703,7 +1002,7 @@ for (const k in external) {
 
 Allows the use of shorthand notation in objects when the property name matches the value.
 
-```javascript
+```javascript twoslash
 // input
 const foo = 1;
 export { foo, foo as bar };
@@ -740,7 +1039,10 @@ System.register('bundle', [], function (exports) {
 
 Allows choosing one of the presets listed above while overriding some options.
 
-```js
+```js twoslash
+// ---cut-start---
+/** @type {import('rollup').RollupOptions} */
+// ---cut-end---
 export default {
 	// ...
 	output: {
@@ -806,6 +1108,20 @@ const foo = 42;
 exports.foo = foo;
 ```
 
+### output.hashCharacters
+
+|          |                                 |
+| -------: | :------------------------------ |
+|    Type: | `"base64" \| "base36" \| "hex"` |
+|     CLI: | `--hashCharacters <name>`       |
+| Default: | `"base64"`                      |
+
+This determines the character set that Rollup is allowed to use in file hashes.
+
+- the default `"base64"` will use url-safe base-64 hashes with potential characters `ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_`.
+- `"base36"` will only use lower-case letters and numbers `abcdefghijklmnopqrstuvwxyz0123456789`.
+- `"hex"` will create hexadecimal hashes with characters `abcdef0123456789`.
+
 ### output.hoistTransitiveImports
 
 |          |                                                          |
@@ -815,6 +1131,16 @@ exports.foo = foo;
 | Default: | `true`                                                   |
 
 By default, when creating multiple chunks, transitive imports of entry chunks will be added as empty imports to the entry chunks. See ["Why do additional imports turn up in my entry chunks when code-splitting?"](../faqs/index.md#why-do-additional-imports-turn-up-in-my-entry-chunks-when-code-splitting) for details and background. Setting this option to `false` will disable this behaviour. This option is ignored when using the [`output.preserveModules`](#output-preservemodules) option as here, imports will never be hoisted.
+
+### output.importAttributesKey
+
+|          |                                |
+| -------: | :----------------------------- |
+|    Type: | `"with" \| "assert"`           |
+|     CLI: | `--importAttributesKey <name>` |
+| Default: | `"assert"`                     |
+
+This determines the keyword set that Rollup will use for import attributes.
 
 ### output.inlineDynamicImports
 
@@ -830,7 +1156,7 @@ This will inline dynamic imports instead of creating new chunks to create a sing
 
 |  |  |
 | --: | :-- |
-| Type: | `"compat" \| "auto"\| "esModule"\| "default"\| "defaultOnly"\| ((id: string) => "compat"\| "auto"\| "esModule"\| "default"\| "defaultOnly")` |
+| Type: | `"compat" \| "auto" \| "esModule" \| "default" \| "defaultOnly" \| ((id: string) => "compat" \| "auto" \| "esModule" \| "default" \| "defaultOnly")` |
 | CLI: | `--interop <value>` |
 | Default: | `"default"` |
 
@@ -848,7 +1174,7 @@ Keep in mind that for Rollup, `import * as ext_namespace from 'external'; consol
 
 - `"default"` assumes that the required value should be treated as the default export of the imported module, just like when importing CommonJS from an ES module context in NodeJS. Named imports are supported as well, which are treated as properties of the default import. To create the namespace object, Rollup injects these helpers:
 
-  ```js
+  ```js twoslash
   var external = require('external1');
 
   function _interopNamespaceDefault(e) {
@@ -867,7 +1193,7 @@ Keep in mind that for Rollup, `import * as ext_namespace from 'external'; consol
   								get: function () {
   									return e[k];
   								}
-  						  }
+  							}
   				);
   			}
   		});
@@ -902,7 +1228,7 @@ Keep in mind that for Rollup, `import * as ext_namespace from 'external'; consol
 
 - `"auto"` combines both `"esModule"` and `"default"` by injecting helpers that contain code that detects at runtime if the required value contains the [`__esModule` property](#output-esmodule). Adding this property is a hack implemented by TypeScript `esModuleInterop`, Babel and other tools to signify that the required value is the namespace of a transpiled ES module.:
 
-  ```js
+  ```js twoslash
   var external = require('external1');
 
   function _interopNamespace(e) {
@@ -922,7 +1248,7 @@ Keep in mind that for Rollup, `import * as ext_namespace from 'external'; consol
   								get: function () {
   									return e[k];
   								}
-  						  }
+  							}
   				);
   			}
   		});
@@ -964,7 +1290,7 @@ Keep in mind that for Rollup, `import * as ext_namespace from 'external'; consol
 
 - `compat` is equivalent to `"auto"` except that it uses a slightly different helper for the default export that checks for the presence of a `default` property instead of the `__esModule` property. Except for the rare situation where a CommonJS module exports a property `"default"` that should not be the default export, this often helps to make interop "just work" as it does not rely on idiosyncratic hacks but instead uses duck-typing:
 
-  ```js
+  ```js twoslash
   var external = require('external1');
 
   function _interopNamespaceCompat(e) {
@@ -984,7 +1310,7 @@ Keep in mind that for Rollup, `import * as ext_namespace from 'external'; consol
   								get: function () {
   									return e[k];
   								}
-  						  }
+  							}
   				);
   			}
   		});
@@ -1060,11 +1386,14 @@ Keep in mind that for Rollup, `import * as ext_namespace from 'external'; consol
 
   As an example if all dependencies are CommonJs, the following config will ensure that named imports are only permitted from Node builtins:
 
-  ```js
+  ```js twoslash
   // rollup.config.js
   import builtins from 'builtins';
   const nodeBuiltins = new Set(builtins());
 
+  // ---cut-start---
+  /** @type {import('rollup').RollupOptions} */
+  // ---cut-end---
   export default {
   	// ...
   	output: {
@@ -1086,14 +1415,17 @@ There are some additional options that have an effect on the generated interop c
 
 ### output.intro/output.outro
 
-|       |                                                              |
-| ----: | :----------------------------------------------------------- |
-| Type: | `string \| ((chunk: ChunkInfo) => string\| Promise<string>)` |
-|  CLI: | `--intro`/`--outro <text>`                                   |
+|  |  |
+| --: | :-- |
+| Type: | `string \| ((chunk: RenderedChunk) => string \| Promise<string>)` |
+| CLI: | `--intro`/`--outro <text>` |
 
 Similar to [`output.banner/output.footer`](#output-banner-output-footer), except that the code goes _inside_ any format-specific wrapper.
 
-```js
+```js twoslash
+// ---cut-start---
+/** @type {import('rollup').RollupOptions} */
+// ---cut-end---
 export default {
 	//...,
 	output: {
@@ -1125,11 +1457,16 @@ will put all lodash modules into a manual chunk even if you are only using impor
 
 When using the function form, each resolved module id will be passed to the function. If a string is returned, the module and all its dependency will be added to the manual chunk with the given name. For instance this will create a `vendor` chunk containing all dependencies inside `node_modules`:
 
-```javascript
+```javascript twoslash
+// ---cut-start---
+/** @type {import('rollup').GetManualChunk} */
+// ---cut-end---
 function manualChunks(id) {
 	if (id.includes('node_modules')) {
 		return 'vendor';
 	}
+
+	return null;
 }
 ```
 
@@ -1157,11 +1494,18 @@ If a lot of such components are used together, this will result in a lot of dyna
 
 The following code will merge all files of the same language that are only used by a single entry point:
 
-```js
+<!-- prettier-ignore-start -->
+```js twoslash
+// ---cut-start---
+/** @type {import('rollup').GetManualChunk} */
+// ---cut-end---
 function manualChunks(id, { getModuleInfo }) {
 	const match = /.*\.strings\.(\w+)\.js/.exec(id);
 	if (match) {
 		const language = match[1]; // e.g. "en"
+// ---cut-start---
+		/** @type {string[]} */
+// ---cut-end---
 		const dependentEntryPoints = [];
 
 		// we use a Set here so we handle each module at most once. This
@@ -1169,6 +1513,9 @@ function manualChunks(id, { getModuleInfo }) {
 		const idsToHandle = new Set(getModuleInfo(id).dynamicImporters);
 
 		for (const moduleId of idsToHandle) {
+// ---cut-start---
+			/** @type {import('rollup').ModuleInfo} */
+// ---cut-end---
 			const { isEntry, dynamicImporters, importers } =
 				getModuleInfo(moduleId);
 			if (isEntry || dynamicImporters.length > 0)
@@ -1193,6 +1540,7 @@ function manualChunks(id, { getModuleInfo }) {
 	}
 }
 ```
+<!-- prettier-ignore-end -->
 
 ### output.minifyInternalExports
 
@@ -1265,13 +1613,16 @@ Even though it appears that setting this option to `true` makes the output large
 
 Maps external module IDs to paths. External ids are ids that [cannot be resolved](../troubleshooting/index.md#warning-treating-module-as-external-dependency) or ids explicitly provided by the [`external`](#external) option. Paths supplied by `output.paths` will be used in the generated bundle instead of the module ID, allowing you to, for example, load dependencies from a CDN:
 
-```js
+```js twoslash
 // app.js
 import { selectAll } from 'd3';
 selectAll('p').style('color', 'purple');
 // ...
 
 // rollup.config.js
+// ---cut-start---
+/** @type {import('rollup').RollupOptions} */
+// ---cut-end---
 export default {
 	input: 'app.js',
 	external: ['d3'],
@@ -1299,7 +1650,7 @@ define(['https://d3js.org/d3.v4.min'], function (d3) {
 |     CLI: | `--preserveModules`/`--no-preserveModules` |
 | Default: | `false`                                    |
 
-Instead of creating as few chunks as possible, this mode will create separate chunks for all modules using the original module names as file names. Requires the [`output.dir`](#output-dir) option. Tree-shaking will still be applied, suppressing files that are not used by the provided entry points or do not have side effects when executed and removing unused exports of files that are not entry points. On the other hand, if plugins (like `@rollup/plugin-commonjs`) emit additional "virtual" files to achieve certain results, those files will be emitted as actual files using a pattern `_virtual/fileName.js`.
+Instead of creating as few chunks as possible, this mode will create separate chunks for all modules using the original module names as file names. Requires the [`output.dir`](#output-dir) option. Tree-shaking will still be applied, suppressing files that are not used by the provided entry points or do not have side effects when executed and removing unused exports of files that are not entry points. On the other hand, if plugins (like `@rollup/plugin-commonjs`) emit additional "virtual" files to achieve certain results, those files will be emitted as actual files using a pattern [`${output.virtualDirname}/fileName.js`](#output-virtualdirname).
 
 It is therefore not recommended to blindly use this option to transform an entire file structure to another format if you directly want to import from those files as expected exports may be missing. In that case, you should rather designate all files explicitly as entry points by adding them to the [`input` option object](#input), see the example there for how to do that.
 
@@ -1355,7 +1706,10 @@ A directory path to input modules that should be stripped away from [`output.dir
 
 For example, given the following configuration:
 
-```javascript
+```javascript twoslash
+// ---cut-start---
+/** @type {import('rollup').RollupOptions} */
+// ---cut-end---
 export default {
 	input: ['src/module.js', `src/another/module.js`],
 	output: [
@@ -1377,7 +1731,7 @@ This option is particularly useful while using plugins such as `@rollup/plugin-n
 
 |          |                                     |
 | -------: | :---------------------------------- |
-|    Type: | `boolean \| 'inline'\| 'hidden'`    |
+|    Type: | `boolean \| 'inline' \| 'hidden'`   |
 |     CLI: | `-m`/`--sourcemap`/`--no-sourcemap` |
 | Default: | `false`                             |
 
@@ -1391,6 +1745,16 @@ If `true`, a separate sourcemap file will be created. If `"inline"`, the sourcem
 |  CLI: | `--sourcemapBaseUrl <url>` |
 
 By default, sourcemap files generated by Rollup uses relative URLs to reference the files they describe. By providing an absolute base URL, e.g. `https://example.com`, sourcemaps will use absolute URLs instead.
+
+### output.sourcemapDebugIds
+
+|          |                                                |
+| -------: | :--------------------------------------------- |
+|    Type: | `boolean`                                      |
+|     CLI: | `--sourcemapDebugIds`/`--no-sourcemapDebugIds` |
+| Default: | `false`                                        |
+
+if `true`, unique ids will be emitted in source and sourcemaps which streamlines identifying sourcemaps across different builds. See the [TC39 sourcemap debug ID proposal](https://github.com/tc39/source-map/blob/main/proposals/debug-id.md) for more details.
 
 ### output.sourcemapExcludeSources
 
@@ -1413,6 +1777,24 @@ The location of the generated bundle. If this is an absolute path, all the `sour
 
 `sourcemapFile` is not required if `output` is specified, in which case an output filename will be inferred by adding ".map" to the output filename for the bundle.
 
+### output.sourcemapFileNames
+
+|       |                                                       |
+| ----: | :---------------------------------------------------- |
+| Type: | `string \| ((chunkInfo: PreRenderedChunk) => string)` |
+|  CLI: | `--sourcemapFileNames <pattern>`                      |
+
+See [`output.chunkFileNames`](#output-chunkfilenames) for the `PreRenderedChunk` type.
+
+The pattern to use for sourcemaps, or a function that is called per sourcemap to return such a pattern. Patterns support the following placeholders:
+
+- `[format]`: The rendering format defined in the output options, e.g. `es` or `cjs`.
+- `[hash]`: A hash based only on the content of the final generated sourcemap. You can also set a specific hash length via e.g. `[hash:10]`. By default, it will create a base-64 hash. If you need a reduced character sets, see [`output.hashCharacters`](#output-hashcharacters)
+- `[chunkhash]`: The same hash as the one used for the corresponding generated chunk (if any).
+- `[name]`: The file name (without extension) of the entry point, unless the object form of input was used to define a different name.
+
+Forward slashes `/` can be used to place files in sub-directories. When using a function, `chunkInfo` is a reduced version of the one in [`generateBundle`](../plugin-development/index.md#generatebundle) without properties that depend on file names and no information about the rendered modules as rendering only happens after file names have been generated. You can however access a list of included `moduleIds`. See also [`output.assetFileNames`](#output-assetfilenames), [`output.chunkFileNames`](#output-chunkfilenames).
+
 ### output.sourcemapIgnoreList
 
 |  |  |
@@ -1421,8 +1803,11 @@ The location of the generated bundle. If this is an absolute path, all the `sour
 
 A predicate to decide whether or not to ignore-list source files in a sourcemap, used to populate the [`x_google_ignoreList` source map extension](https://developer.chrome.com/articles/x-google-ignore-list/). `relativeSourcePath` is a relative path from the generated `.map` file to the corresponding source file while `sourcemapPath` is the fully resolved path of the generated sourcemap file.
 
-```js
+```js twoslash
 import path from 'node:path';
+// ---cut-start---
+/** @type {import('rollup').RollupOptions} */
+// ---cut-end---
 export default {
 	input: 'src/main',
 	output: [
@@ -1449,8 +1834,11 @@ When you don't specify this option explicitly, by default it will put all files 
 
 A transformation to apply to each path in a sourcemap. `relativeSourcePath` is a relative path from the generated `.map` file to the corresponding source file while `sourcemapPath` is the fully resolved path of the generated sourcemap file.
 
-```js
+```js twoslash
 import path from 'node:path';
+// ---cut-start---
+/** @type {import('rollup').RollupOptions} */
+// ---cut-end---
 export default {
 	input: 'src/main',
 	output: [
@@ -1482,11 +1870,21 @@ Re-parses each generated chunk to detect if the generated code is valid JavaScri
 
 If the code is invalid, a warning will be issued. Note that no error is thrown so that you can still inspect the generated output. To promote this warning to an error, you can watch for it in an [`onwarn`](#onwarn) handler.
 
+### output.virtualDirname
+
+|          |                              |
+| -------: | :--------------------------- |
+|    Type: | `string`                     |
+|     CLI: | `--virtualDirname <dirname>` |
+| Default: | `_virtual`                   |
+
+This option specifies the directory name for "virtual" files that might be emitted by plugins (like `@rollup/plugin-commonjs`). It is only validated when [`output.preserveModules`](#output-preservemodules) is enabled.
+
 ### preserveEntrySignatures
 
 |  |  |
 | --: | :-- |
-| Type: | `"strict" \| "allow-extension" \| "exports-only"\| false` |
+| Type: | `"strict" \| "allow-extension" \| "exports-only" \| false` |
 | CLI: | `--preserveEntrySignatures <strict \| allow-extension>`/`--no-preserveEntrySignatures` |
 | Default: | `"exports-only"` |
 
@@ -1580,33 +1978,6 @@ This flag is intended to be used by e.g. plugin authors to be able to adjust the
 
 You probably don't need to use these options unless you know what you are doing!
 
-### acorn
-
-|       |                |
-| ----: | :------------- |
-| Type: | `AcornOptions` |
-
-Any options that should be passed through to Acorn's `parse` function, such as `allowReserved: true`. Cf. the [Acorn documentation](https://github.com/acornjs/acorn/tree/master/acorn#interface) for more available options.
-
-### acornInjectPlugins
-
-|       |                                                |
-| ----: | :--------------------------------------------- |
-| Type: | `AcornPluginFunction \| AcornPluginFunction[]` |
-
-A single plugin or an array of plugins to be injected into Acorn. For instance to use JSX syntax, you can specify
-
-```javascript
-import jsx from 'acorn-jsx';
-
-export default {
-	// … other options …
-	acornInjectPlugins: [jsx()]
-};
-```
-
-in your rollup configuration. Note that this is different from using Babel in that the generated output will still contain JSX while Babel will replace it with valid JavaScript.
-
 ### context
 
 |          |                               |
@@ -1642,14 +2013,19 @@ Note `id` can only be used for single-file builds, and cannot be combined with `
 
 An ID to use for AMD/UMD bundles:
 
-```js
+```js twoslash
 // rollup.config.js
+// ---cut-start---
+/** @type {import('rollup').RollupOptions} */
+// ---cut-end---
 export default {
-  ...,
-  format: 'amd',
-  amd: {
-    id: 'my-bundle'
-  }
+	// ...
+	output: {
+		format: 'amd',
+		amd: {
+			id: 'my-bundle'
+		}
+	}
 };
 
 // -> define('my-bundle', ['dependency'], ...
@@ -1664,14 +2040,19 @@ export default {
 
 Set the ID to the chunk ID (with the '.js' extension removed).
 
-```js
+```js twoslash
 // rollup.config.js
+// ---cut-start---
+/** @type {import('rollup').RollupOptions} */
+// ---cut-end---
 export default {
-  ...,
-  format: 'amd',
-  amd: {
-    autoId: true
-  }
+	// ...
+	output: {
+		format: 'amd',
+		amd: {
+			autoId: true
+		}
+	}
 };
 
 // -> define('main', ['dependency'], ...
@@ -1689,15 +2070,20 @@ The path that will be prepended to the auto generated ID. This is useful if the 
 
 Only valid with [`output.amd.autoId`](#output-amd-autoid).
 
-```js
+```js twoslash
 // rollup.config.js
+// ---cut-start---
+/** @type {import('rollup').RollupOptions} */
+// ---cut-end---
 export default {
-  ...,
-  format: 'amd',
-  amd: {
-    autoId: true,
-    basePath: 'some/where'
-  }
+	// ...
+	output: {
+		format: 'amd',
+		amd: {
+			autoId: true,
+			basePath: 'some/where'
+		}
+	}
 };
 
 // -> define('some/where/main', ['dependency'], ...
@@ -1713,14 +2099,19 @@ export default {
 
 A function name to use instead of `define`:
 
-```js
+```js twoslash
 // rollup.config.js
+// ---cut-start---
+/** @type {import('rollup').RollupOptions} */
+// ---cut-end---
 export default {
-  ...,
-  format: 'amd',
-  amd: {
-    define: 'def'
-  }
+	// ...
+	output: {
+		format: 'amd',
+		amd: {
+			define: 'def'
+		}
+	}
 };
 
 // -> def(['dependency'],...
@@ -1736,14 +2127,19 @@ export default {
 
 Add `.js` extension for imports of generated chunks and local AMD modules:
 
-```js
+```js twoslash
 // rollup.config.js
+// ---cut-start---
+/** @type {import('rollup').RollupOptions} */
+// ---cut-end---
 export default {
-  ...,
-  format: 'amd',
-  amd: {
-    forceJsExtensionForImports: true
-  }
+	// ...
+	output: {
+		format: 'amd',
+		amd: {
+			forceJsExtensionForImports: true
+		}
+	}
 };
 
 // -> define(['./chunk-or-local-file.js', 'dependency', 'third/dependency'],...
@@ -1767,11 +2163,11 @@ See also [`output.interop`](#output-interop).
 
 ### output.exports
 
-|          |                                          |
-| -------: | :--------------------------------------- |
-|    Type: | `"auto" \| "default"\| "named"\| "none"` |
-|     CLI: | `--exports <exportMode>`                 |
-| Default: | `'auto'`                                 |
+|          |                                            |
+| -------: | :----------------------------------------- |
+|    Type: | `"auto" \| "default" \| "named" \| "none"` |
+|     CLI: | `--exports <exportMode>`                   |
+| Default: | `'auto'`                                   |
 
 What export mode to use. Defaults to `auto`, which guesses your intentions based on what the `input` module exports:
 
@@ -1878,14 +2274,17 @@ Whether to `Object.freeze()` namespace import objects (i.e. `import * as namespa
 
 The indent string to use, for formats that require code to be indented (`amd`, `iife`, `umd`, `system`). Can also be `false` (no indent), or `true` (the default – auto-indent)
 
-```js
+```js twoslash
 // rollup.config.js
+// ---cut-start---
+/** @type {import('rollup').RollupOptions} */
+// ---cut-end---
 export default {
-  ...,
-  output: {
-    ...,
-    indent: false
-  }
+	// ...
+	output: {
+		// ...
+		indent: false
+	}
 };
 ```
 
@@ -1898,6 +2297,51 @@ export default {
 | Default: | `false`                          |
 
 This will generate an additional `noConflict` export to UMD bundles. When called in an IIFE scenario, this method will return the bundle exports while restoring the corresponding global variable to its previous value.
+
+### output.reexportProtoFromExternal
+
+|  |  |
+| --: | :-- |
+| Type: | `boolean` |
+| CLI: | `--reexportProtoFromExternal`/`--no-reexportProtoFromExternal` |
+| Default: | `true` |
+
+This option is only effective when [`output.format`](#output-format) is set to one of `['amd', 'cjs', 'iife', 'umd']` and [`output.externalLiveBindings`](#output-externallivebindings) is set to false.
+
+For maximum compatibility, Rollup reexports `__proto__` from an external module by default. However, for common use cases, it is strongly recommended to set this value to false as it effectively reduces the output size.
+
+```js
+// the input file
+export * from 'rollup';
+```
+
+```js
+// the output file if the output.format is cjs
+'use strict';
+
+// reexportProtoFromExternal is true
+var rollup = require('rollup');
+
+Object.prototype.hasOwnProperty.call(rollup, '__proto__') &&
+	!Object.prototype.hasOwnProperty.call(exports, '__proto__') &&
+	Object.defineProperty(exports, '__proto__', {
+		enumerable: true,
+		value: rollup['__proto__']
+	});
+
+Object.keys(rollup).forEach(function (k) {
+	if (k !== 'default' && !Object.prototype.hasOwnProperty.call(exports, k))
+		exports[k] = rollup[k];
+});
+
+// reexportProtoFromExternal is false
+var rollup = require('rollup');
+
+Object.keys(rollup).forEach(function (k) {
+	if (k !== 'default' && !Object.prototype.hasOwnProperty.call(exports, k))
+		exports[k] = rollup[k];
+});
+```
 
 ### output.sanitizeFileName
 
@@ -1976,7 +2420,7 @@ If this option is provided, bundling will not fail if bindings are imported from
 |          |                                                      |
 | -------: | :--------------------------------------------------- |
 |    Type: | `boolean \| TreeshakingPreset \| TreeshakingOptions` |
-|     CLI: | `--treeshake`/`--no-treeshake`                       |
+|     CLI: | `--treeshake <preset>`/`--no-treeshake`              |
 | Default: | `true`                                               |
 
 ```typescript
@@ -2021,7 +2465,11 @@ If you discover a bug caused by the tree-shaking algorithm, please file an issue
 |     CLI: | `--treeshake.annotations`/`--no-treeshake.annotations` |
 | Default: | `true`                                                 |
 
-If `false`, ignore hints from pure annotations, i.e. comments containing `@__PURE__` or `#__PURE__`, when determining side effects of function calls and constructor invocations. These annotations need to immediately precede the call invocation to take effect. The following code will be completely removed unless this option is set to `false`, in which case it will remain unchanged.
+If `false`, ignore hints from annotation in comments:
+
+##### `@__PURE__`
+
+Comments containing `@__PURE__` or `#__PURE__` mark a specific function call or constructor invocation as side effect free. That means that Rollup will tree-shake i.e. remove the call unless the return value is used in some code that is not tree-shaken. These annotations need to immediately precede the call invocation to take effect. The following code will be completely tree-shaken unless this option is set to `false`, in which case it will remain unchanged.
 
 ```javascript
 /*@__PURE__*/ console.log('side-effect');
@@ -2032,8 +2480,35 @@ class Impure {
 	}
 }
 
-/*@__PURE__*/ new Impure();
+/*@__PURE__ There may be additional text in the comment */ new Impure();
 ```
+
+Such an annotation is considered _valid_ if it directly precedes a function call or constructor invocation and is only separated from the callee by white-space or comments. The only exception are parentheses that wrap a call or invocation.
+
+Invalid annotations are removed and Rollup emits a warning. Valid annotations remain in the code unless their function call or constructor invocation is removed as well.
+
+##### `@__NO_SIDE_EFFECTS__`
+
+Comments containing `@__NO_SIDE_EFFECTS__` or `#__NO_SIDE_EFFECTS__` mark a function declaration itself as side effect free. When a function has been marked as having no side effects, all calls to that function will be considered to be side effect free. The following code will be completely tree-shaken unless this option is set to `false`, in which case it will remain unchanged.
+
+```javascript
+/*@__NO_SIDE_EFFECTS__*/
+function impure() {
+	console.log('side-effect');
+}
+
+/*@__NO_SIDE_EFFECTS__*/
+const impureArrowFn = () => {
+	console.log('side-effect');
+};
+
+impure(); // <-- call will be considered as side effect free
+impureArrowFn(); // <-- call will be considered as side effect free
+```
+
+Such an annotation is considered _valid_ if it directly precedes a function declaration or a constant variable declaration where the first declared variable is a function and is only separated from the declaration by white-space or comments.
+
+Invalid annotations are removed and Rollup emits a warning. Valid annotations remain in the code unless their declaration is removed as well
 
 #### treeshake.correctVarValueBeforeDeclaration
 
@@ -2081,8 +2556,11 @@ This can not only help with dead code removal, but can also improve JavaScript c
 
 Besides any functions matching that name, any properties on a pure function and any functions returned from a pure functions will also be considered pure functions, and accessing any properties is not checked for side effects.
 
-```js
+```js twoslash
 // rollup.config.js
+// ---cut-start---
+/** @type {import('rollup').RollupOptions} */
+// ---cut-end---
 export default {
 	treeshake: {
 		preset: 'smallest',
@@ -2108,7 +2586,7 @@ styled().div(); // removed
 
 |  |  |
 | --: | :-- |
-| Type: | `boolean\| "no-external"\| string[]\| (id: string, external: boolean) => boolean` |
+| Type: | `boolean \| "no-external" \| string[] \| (id: string, external: boolean) => boolean` |
 | CLI: | `--treeshake.moduleSideEffects`/`--no-treeshake.moduleSideEffects`/`--treeshake.moduleSideEffects no-external` |
 | Default: | `true` |
 
@@ -2196,14 +2674,17 @@ Note that despite the name, this option does not "add" side effects to modules t
 
 #### treeshake.preset
 
-|       |                                          |
-| ----: | :--------------------------------------- |
-| Type: | `"smallest" \| "safest"\| "recommended"` |
-|  CLI: | `--treeshake <value>`<br>                |
+|       |                                           |
+| ----: | :---------------------------------------- |
+| Type: | `"smallest" \| "safest" \| "recommended"` |
+|  CLI: | `--treeshake <value>`<br>                 |
 
 Allows choosing one of the presets listed above while overriding some options.
 
-```js
+```js twoslash
+// ---cut-start---
+/** @type {import('rollup').RollupOptions} */
+// ---cut-end---
 export default {
 	treeshake: {
 		preset: 'smallest',
@@ -2217,7 +2698,7 @@ export default {
 
 |  |  |
 | --: | :-- |
-| Type: | `boolean\| 'always'` |
+| Type: | `boolean \| 'always'` |
 | CLI: | `--treeshake.propertyReadSideEffects`/`--no-treeshake.propertyReadSideEffects` |
 | Default: | `true` |
 
@@ -2385,13 +2866,17 @@ interface WatcherOptions {
 	exclude?: string | RegExp | (string | RegExp)[];
 	include?: string | RegExp | (string | RegExp)[];
 	skipWrite?: boolean;
+	onInvalidate?: (id: string) => void;
 }
 ```
 
 Specify options for watch mode or prevent this configuration from being watched. Specifying `false` is only really useful when an array of configurations is used. In that case, this configuration will not be built or rebuilt on change in watch mode, but it will be built when running Rollup regularly:
 
-```js
+```js twoslash
 // rollup.config.js
+// ---cut-start---
+/** @type {import('rollup').RollupOptions[]} */
+// ---cut-end---
 export default [
 	{
 		input: 'main.js',
@@ -2437,39 +2922,45 @@ Whether to clear the screen when a rebuild is triggered.
 
 ### watch.exclude
 
-|       |                                          |
-| ----: | :--------------------------------------- |
-| Type: | `string \| RegExp\| (string\| RegExp)[]` |
-|  CLI: | `--watch.exclude <files>`                |
+|       |                                            |
+| ----: | :----------------------------------------- |
+| Type: | `string \| RegExp \| (string \| RegExp)[]` |
+|  CLI: | `--watch.exclude <files>`                  |
 
 Prevent files from being watched:
 
-```js
+```js twoslash
 // rollup.config.js
+// ---cut-start---
+/** @type {import('rollup').RollupOptions} */
+// ---cut-end---
 export default {
-  ...,
-  watch: {
-    exclude: 'node_modules/**'
-  }
+	// ...
+	watch: {
+		exclude: 'node_modules/**'
+	}
 };
 ```
 
 ### watch.include
 
-|       |                                          |
-| ----: | :--------------------------------------- |
-| Type: | `string \| RegExp\| (string\| RegExp)[]` |
-|  CLI: | `--watch.include <files>`                |
+|       |                                            |
+| ----: | :----------------------------------------- |
+| Type: | `string \| RegExp \| (string \| RegExp)[]` |
+|  CLI: | `--watch.include <files>`                  |
 
 Limit the file-watching to certain files. Note that this only filters the module graph but does not allow adding additional watch files:
 
-```js
+```js twoslash
+// ---cut-start---
+/** @type {import('rollup').RollupOptions} */
+// ---cut-end---
 // rollup.config.js
 export default {
-  ...,
-  watch: {
-    include: 'src/**'
-  }
+	// ...
+	watch: {
+		include: 'src/**'
+	}
 };
 ```
 
@@ -2483,85 +2974,26 @@ export default {
 
 Whether to skip the `bundle.write()` step when a rebuild is triggered.
 
+### watch.onInvalidate
+
+|       |                        |
+| ----: | :--------------------- |
+| Type: | `(id: string) => void` |
+
+An optional function that will be called immediately every time a module changes that is part of the build. It receives the id of the changed module as argument. This is different from the [`watchChange`](../plugin-development/index.md#watchchange) plugin hook, which is only called once the running build has finished. This may for instance be used to prevent additional steps from being performed if we know another build will be started anyway once the current build finished. This callback may be called multiple times per build as it tracks every change.
+
 ## Deprecated options
 
 ☢️ These options have been deprecated and may be removed in a future Rollup version.
 
-### inlineDynamicImports
+### output.externalImportAssertions
 
-_Use the [`output.inlineDynamicImports`](#output-inlinedynamicimports) output option instead, which has the same signature._
+_Use the [`output.externalImportAttributes`](#output-externalimportattributes) option instead._
 
-### manualChunks
+|          |                                                              |
+| -------: | :----------------------------------------------------------- |
+|    Type: | `boolean`                                                    |
+|     CLI: | `--externalImportAssertions`/`--no-externalImportAssertions` |
+| Default: | `true`                                                       |
 
-_Use the [`output.manualChunks`](#output-manualchunks) output option instead, which has the same signature._
-
-### maxParallelFileReads
-
-_Use the [`maxParallelFileOps`](#maxparallelfileops) option instead._
-
-|          |                                   |
-| -------: | :-------------------------------- |
-|    Type: | `number`                          |
-|     CLI: | `--maxParallelFileReads <number>` |
-| Default: | 20                                |
-
-Limits the number of files rollup will open in parallel when reading modules. Without a limit or with a high enough value, builds can fail with an "EMFILE: too many open files". This depends on how many open file handles the os allows.
-
-### output.dynamicImportFunction
-
-_Use the [`renderDynamicImport`](../plugin-development/index.md#renderdynamicimport) plugin hook instead._
-
-|          |                                  |
-| -------: | :------------------------------- |
-|    Type: | `string`                         |
-|     CLI: | `--dynamicImportFunction <name>` |
-| Default: | `import`                         |
-
-This will rename the dynamic import function to the chosen name when outputting ES bundles. This is useful for generating code that uses a dynamic import polyfill such as [this one](https://github.com/uupaa/dynamic-import-polyfill).
-
-### output.experimentalDeepDynamicChunkOptimization
-
-_This option is no longer needed._
-
-|  |  |
-| --: | :-- |
-| Type: | `boolean` |
-| CLI: | `--experimentalDeepDynamicChunkOptimization`/`--no-experimentalDeepDynamicChunkOptimization` |
-| Default: | `false` |
-
-This option was used to prevent performance issues with the full chunk optimization algorithm. As the algorithm is much faster now, this option is now ignored by Rollup and should no longer be used.
-
-### output.preferConst
-
-_Use the [`output.generatedCode.constBindings`](#output-generatedcode-constbindings) option instead._
-
-|          |                                    |
-| -------: | :--------------------------------- |
-|    Type: | `boolean`                          |
-|     CLI: | `--preferConst`/`--no-preferConst` |
-| Default: | `false`                            |
-
-Generate `const` declarations for exports rather than `var` declarations.
-
-### output.namespaceToStringTag
-
-_Use [`output.generatedCode.symbols`](#output-generatedcode-symbols) instead._
-
-|          |                                                      |
-| -------: | :--------------------------------------------------- |
-|    Type: | `boolean`                                            |
-|     CLI: | `--namespaceToStringTag`/`--no-namespaceToStringTag` |
-| Default: | `false`                                              |
-
-Whether to add spec compliant `.toString()` tags to namespace objects. If this option is set,
-
-```javascript
-import * as namespace from './file.js';
-console.log(String(namespace));
-```
-
-will always log `[object Module]`;
-
-### preserveModules
-
-_Use the [`output.preserveModules`](#output-preservemodules) output option instead, which has the same signature._
+Whether to add import assertions to external imports in the output if the output format is `es`. By default, assertions are taken from the input files, but plugins can add or remove assertions later. E.g. `import "foo" assert {type: "json"}` will cause the same import to appear in the output unless the option is set to `false`. Note that all imports of a module need to have consistent assertions, otherwise a warning is emitted.

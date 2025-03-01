@@ -8,8 +8,9 @@ const INTEROP_NAMESPACE_COMPAT_VARIABLE = '_interopNamespaceCompat';
 const INTEROP_NAMESPACE_DEFAULT_VARIABLE = '_interopNamespaceDefault';
 export const INTEROP_NAMESPACE_DEFAULT_ONLY_VARIABLE = '_interopNamespaceDefaultOnly';
 export const MERGE_NAMESPACES_VARIABLE = '_mergeNamespaces';
+export const DOCUMENT_CURRENT_SCRIPT = '_documentCurrentScript';
 
-export const defaultInteropHelpersByInteropType: { [T in InteropType]: string | null } = {
+export const defaultInteropHelpersByInteropType: Record<InteropType, string | null> = {
 	auto: INTEROP_DEFAULT_VARIABLE,
 	compat: INTEROP_DEFAULT_COMPAT_VARIABLE,
 	default: null,
@@ -24,7 +25,7 @@ export const isDefaultAProperty = (
 	interopType === 'esModule' ||
 	(externalLiveBindings && (interopType === 'auto' || interopType === 'compat'));
 
-export const namespaceInteropHelpersByInteropType: { [T in InteropType]: string | null } = {
+export const namespaceInteropHelpersByInteropType: Record<InteropType, string | null> = {
 	auto: INTEROP_NAMESPACE_VARIABLE,
 	compat: INTEROP_NAMESPACE_COMPAT_VARIABLE,
 	default: INTEROP_NAMESPACE_DEFAULT_VARIABLE,
@@ -44,7 +45,7 @@ export const getHelpersBlock = (
 	snippets: GenerateCodeSnippets,
 	liveBindings: boolean,
 	freeze: boolean,
-	namespaceToStringTag: boolean
+	symbols: boolean
 ): string => {
 	const usedHelpers = new Set(additionalHelpers);
 	for (const variable of HELPER_NAMES) {
@@ -54,28 +55,25 @@ export const getHelpersBlock = (
 	}
 	return HELPER_NAMES.map(variable =>
 		usedHelpers.has(variable)
-			? HELPER_GENERATORS[variable](
-					indent,
-					snippets,
-					liveBindings,
-					freeze,
-					namespaceToStringTag,
-					usedHelpers
-			  )
+			? HELPER_GENERATORS[variable](indent, snippets, liveBindings, freeze, symbols, usedHelpers)
 			: ''
 	).join('');
 };
 
-const HELPER_GENERATORS: {
-	[variable: string]: (
+const HELPER_GENERATORS: Record<
+	string,
+	(
 		indent: string,
 		snippets: GenerateCodeSnippets,
 		liveBindings: boolean,
 		freeze: boolean,
-		namespaceToStringTag: boolean,
+		symbols: boolean,
 		usedHelpers: ReadonlySet<string>
-	) => string;
-} = {
+	) => string
+> = {
+	[DOCUMENT_CURRENT_SCRIPT](_t, { _, n }) {
+		return `var ${DOCUMENT_CURRENT_SCRIPT}${_}=${_}typeof document${_}!==${_}'undefined'${_}?${_}document.currentScript${_}:${_}null;${n}`;
+	},
 	[INTEROP_DEFAULT_COMPAT_VARIABLE](_t, snippets, liveBindings) {
 		const { _, getDirectReturnFunction, n } = snippets;
 		const [left, right] = getDirectReturnFunction(['e'], {
@@ -104,14 +102,7 @@ const HELPER_GENERATORS: {
 			}${right}${n}${n}`
 		);
 	},
-	[INTEROP_NAMESPACE_COMPAT_VARIABLE](
-		t,
-		snippets,
-		liveBindings,
-		freeze,
-		namespaceToStringTag,
-		usedHelpers
-	) {
+	[INTEROP_NAMESPACE_COMPAT_VARIABLE](t, snippets, liveBindings, freeze, symbols, usedHelpers) {
 		const { _, getDirectReturnFunction, n } = snippets;
 		if (usedHelpers.has(INTEROP_NAMESPACE_DEFAULT_VARIABLE)) {
 			const [left, right] = getDirectReturnFunction(['e'], {
@@ -126,7 +117,7 @@ const HELPER_GENERATORS: {
 		return (
 			`function ${INTEROP_NAMESPACE_COMPAT_VARIABLE}(e)${_}{${n}` +
 			`${t}if${_}(${getIsCompatNamespace(snippets)})${_}return e;${n}` +
-			createNamespaceObject(t, t, snippets, liveBindings, freeze, namespaceToStringTag) +
+			createNamespaceObject(t, t, snippets, liveBindings, freeze, symbols) +
 			`}${n}${n}`
 		);
 	},
@@ -135,9 +126,9 @@ const HELPER_GENERATORS: {
 		snippets,
 		_liveBindings: boolean,
 		freeze: boolean,
-		namespaceToStringTag: boolean
+		symbols: boolean
 	) {
-		const { getDirectReturnFunction, getObject, n } = snippets;
+		const { getDirectReturnFunction, getObject, n, _ } = snippets;
 		const [left, right] = getDirectReturnFunction(['e'], {
 			functionReturn: true,
 			lineBreakIndent: null,
@@ -146,10 +137,10 @@ const HELPER_GENERATORS: {
 		return `${left}${getFrozen(
 			freeze,
 			getWithToStringTag(
-				namespaceToStringTag,
+				symbols,
 				getObject(
 					[
-						['__proto__', 'null'],
+						[null, `__proto__:${_}null`],
 						['default', 'e']
 					],
 					{ lineBreakIndent: null }
@@ -158,22 +149,15 @@ const HELPER_GENERATORS: {
 			)
 		)}${right}${n}${n}`;
 	},
-	[INTEROP_NAMESPACE_DEFAULT_VARIABLE](t, snippets, liveBindings, freeze, namespaceToStringTag) {
+	[INTEROP_NAMESPACE_DEFAULT_VARIABLE](t, snippets, liveBindings, freeze, symbols) {
 		const { _, n } = snippets;
 		return (
 			`function ${INTEROP_NAMESPACE_DEFAULT_VARIABLE}(e)${_}{${n}` +
-			createNamespaceObject(t, t, snippets, liveBindings, freeze, namespaceToStringTag) +
+			createNamespaceObject(t, t, snippets, liveBindings, freeze, symbols) +
 			`}${n}${n}`
 		);
 	},
-	[INTEROP_NAMESPACE_VARIABLE](
-		t,
-		snippets,
-		liveBindings,
-		freeze,
-		namespaceToStringTag,
-		usedHelpers
-	) {
+	[INTEROP_NAMESPACE_VARIABLE](t, snippets, liveBindings, freeze, symbols, usedHelpers) {
 		const { _, getDirectReturnFunction, n } = snippets;
 		if (usedHelpers.has(INTEROP_NAMESPACE_DEFAULT_VARIABLE)) {
 			const [left, right] = getDirectReturnFunction(['e'], {
@@ -186,11 +170,11 @@ const HELPER_GENERATORS: {
 		return (
 			`function ${INTEROP_NAMESPACE_VARIABLE}(e)${_}{${n}` +
 			`${t}if${_}(e${_}&&${_}e.__esModule)${_}return e;${n}` +
-			createNamespaceObject(t, t, snippets, liveBindings, freeze, namespaceToStringTag) +
+			createNamespaceObject(t, t, snippets, liveBindings, freeze, symbols) +
 			`}${n}${n}`
 		);
 	},
-	[MERGE_NAMESPACES_VARIABLE](t, snippets, liveBindings, freeze, namespaceToStringTag) {
+	[MERGE_NAMESPACES_VARIABLE](t, snippets, liveBindings, freeze, symbols) {
 		const { _, cnst, n } = snippets;
 		const useForEach = cnst === 'var' && liveBindings;
 		return (
@@ -209,10 +193,7 @@ const HELPER_GENERATORS: {
 				t,
 				snippets
 			)}${n}` +
-			`${t}return ${getFrozen(
-				freeze,
-				getWithToStringTag(namespaceToStringTag, 'n', snippets)
-			)};${n}` +
+			`${t}return ${getFrozen(freeze, getWithToStringTag(symbols, 'n', snippets))};${n}` +
 			`}${n}${n}`
 		);
 	}
@@ -233,7 +214,7 @@ const createNamespaceObject = (
 	snippets: GenerateCodeSnippets,
 	liveBindings: boolean,
 	freeze: boolean,
-	namespaceToStringTag: boolean
+	symbols: boolean
 ) => {
 	const { _, cnst, getObject, getPropertyAccess, n, s } = snippets;
 	const copyProperty =
@@ -246,9 +227,7 @@ const createNamespaceObject = (
 		`${index}${t}}`;
 	return (
 		`${index}${cnst} n${_}=${_}Object.create(null${
-			namespaceToStringTag
-				? `,${_}{${_}[Symbol.toStringTag]:${_}${getToStringTagValue(getObject)}${_}}`
-				: ''
+			symbols ? `,${_}{${_}[Symbol.toStringTag]:${_}${getToStringTagValue(getObject)}${_}}` : ''
 		});${n}` +
 		`${index}if${_}(e)${_}{${n}` +
 		`${index}${t}${loopOverKeys(copyProperty, !liveBindings, snippets)}${n}` +
@@ -268,7 +247,7 @@ const loopOverKeys = (
 		: `Object.keys(e).forEach(${getFunctionIntro(['k'], {
 				isAsync: false,
 				name: null
-		  })}${body})${s}`;
+			})}${body})${s}`;
 
 const loopOverNamespaces = (
 	body: string,
@@ -360,14 +339,14 @@ const getFrozen = (freeze: boolean, fragment: string) =>
 	freeze ? `Object.freeze(${fragment})` : fragment;
 
 const getWithToStringTag = (
-	namespaceToStringTag: boolean,
+	symbols: boolean,
 	fragment: string,
 	{ _, getObject }: GenerateCodeSnippets
 ) =>
-	namespaceToStringTag
+	symbols
 		? `Object.defineProperty(${fragment},${_}Symbol.toStringTag,${_}${getToStringTagValue(
 				getObject
-		  )})`
+			)})`
 		: fragment;
 
 export const HELPER_NAMES = Object.keys(HELPER_GENERATORS);

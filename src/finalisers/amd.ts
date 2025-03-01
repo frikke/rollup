@@ -1,11 +1,11 @@
 import type { Bundle as MagicStringBundle } from 'magic-string';
 import type { NormalizedOutputOptions } from '../rollup/types';
+import type { FinaliserOptions } from './index';
 import getCompleteAmdId from './shared/getCompleteAmdId';
 import { getExportBlock, getNamespaceMarkers } from './shared/getExportBlock';
 import getInteropBlock from './shared/getInteropBlock';
 import updateExtensionForRelativeAmdId from './shared/updateExtensionForRelativeAmdId';
 import warnOnBuiltins from './shared/warnOnBuiltins';
-import type { FinaliserOptions } from './index';
 
 export default function amd(
 	magicString: MagicStringBundle,
@@ -21,21 +21,22 @@ export default function amd(
 		isEntryFacade,
 		isModuleFacade,
 		namedExportsMode,
+		log,
 		outro,
-		snippets,
-		onwarn
+		snippets
 	}: FinaliserOptions,
 	{
 		amd,
 		esModule,
 		externalLiveBindings,
 		freeze,
+		generatedCode: { symbols },
 		interop,
-		namespaceToStringTag,
+		reexportProtoFromExternal,
 		strict
 	}: NormalizedOutputOptions
 ): void {
-	warnOnBuiltins(onwarn, dependencies);
+	warnOnBuiltins(log, dependencies);
 	const deps = dependencies.map(
 		m => `'${updateExtensionForRelativeAmdId(m.importPath, amd.forceJsExtensionForImports)}'`
 	);
@@ -69,7 +70,7 @@ export default function amd(
 			interop,
 			externalLiveBindings,
 			freeze,
-			namespaceToStringTag,
+			symbols,
 			accessedGlobals,
 			t,
 			snippets
@@ -83,12 +84,13 @@ export default function amd(
 		interop,
 		snippets,
 		t,
-		externalLiveBindings
+		externalLiveBindings,
+		reexportProtoFromExternal
 	);
 	let namespaceMarkers = getNamespaceMarkers(
 		namedExportsMode && hasExports,
 		isEntryFacade && (esModule === true || (esModule === 'if-default-prop' && hasDefaultExport)),
-		isModuleFacade && namespaceToStringTag,
+		isModuleFacade && symbols,
 		snippets
 	);
 	if (namespaceMarkers) {

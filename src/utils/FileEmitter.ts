@@ -5,55 +5,84 @@ import type {
 	EmittedAsset,
 	EmittedChunk,
 	EmittedPrebuiltChunk,
+	LogHandler,
 	NormalizedInputOptions,
 	NormalizedOutputOptions,
-	OutputChunk,
-	WarningHandler
+	OutputChunk
 } from '../rollup/types';
 import { BuildPhase } from './buildPhase';
-import { createHash } from './crypto';
+import type { GetHash } from './crypto';
+import { getHash64, hasherByType } from './crypto';
+import { getOrCreate } from './getOrCreate';
+import { DEFAULT_HASH_SIZE } from './hashPlaceholders';
+import { LOGLEVEL_WARN } from './logging';
 import {
 	error,
-	errorAssetNotFinalisedForFileName,
-	errorAssetReferenceIdNotFoundForSetSource,
-	errorAssetSourceAlreadySet,
-	errorChunkNotGeneratedForFileName,
-	errorFailedValidation,
-	errorFileNameConflict,
-	errorFileReferenceIdNotFoundForFilename,
-	errorInvalidRollupPhaseForChunkEmission,
-	errorNoAssetSourceSet
-} from './error';
-import { getOrCreate } from './getOrCreate';
-import { defaultHashSize } from './hashPlaceholders';
+	logAssetNotFinalisedForFileName,
+	logAssetReferenceIdNotFoundForSetSource,
+	logAssetSourceAlreadySet,
+	logChunkNotGeneratedForFileName,
+	logFailedValidation,
+	logFileNameConflict,
+	logFileReferenceIdNotFoundForFilename,
+	logInvalidRollupPhaseForChunkEmission,
+	logNoAssetSourceSet,
+	warnDeprecation
+} from './logs';
 import type { OutputBundleWithPlaceholders } from './outputBundle';
 import { FILE_PLACEHOLDER, lowercaseBundleKeys } from './outputBundle';
 import { extname } from './path';
 import { isPathFragment } from './relativeId';
 import { makeUnique, renderNamePattern } from './renderNamePattern';
-
-function getSourceHash(source: string | Uint8Array): string {
-	return createHash().update(source).digest('hex');
-}
+import { URL_GENERATEBUNDLE } from './urls';
 
 function generateAssetFileName(
 	name: string | undefined,
+	names: string[],
 	source: string | Uint8Array,
+	originalFileName: string | null,
+	originalFileNames: string[],
 	sourceHash: string,
 	outputOptions: NormalizedOutputOptions,
-	bundle: OutputBundleWithPlaceholders
+	bundle: OutputBundleWithPlaceholders,
+	inputOptions: NormalizedInputOptions
 ): string {
 	const emittedName = outputOptions.sanitizeFileName(name || 'asset');
 	return makeUnique(
 		renderNamePattern(
 			typeof outputOptions.assetFileNames === 'function'
-				? outputOptions.assetFileNames({ name, source, type: 'asset' })
+				? outputOptions.assetFileNames({
+						// Additionally, this should be non-enumerable in the next major
+						get name() {
+							warnDeprecation(
+								'Accessing the "name" property of emitted assets when generating the file name is deprecated. Use the "names" property instead.',
+								URL_GENERATEBUNDLE,
+								false,
+								inputOptions
+							);
+							return name;
+						},
+						names,
+						// Additionally, this should be non-enumerable in the next major
+						get originalFileName() {
+							warnDeprecation(
+								'Accessing the "originalFileName" property of emitted assets when generating the file name is deprecated. Use the "originalFileNames" property instead.',
+								URL_GENERATEBUNDLE,
+								false,
+								inputOptions
+							);
+							return originalFileName;
+						},
+						originalFileNames,
+						source,
+						type: 'asset'
+					})
 				: outputOptions.assetFileNames,
 			'output.assetFileNames',
 			{
 				ext: () => extname(emittedName).slice(1),
 				extname: () => extname(emittedName),
-				hash: size => sourceHash.slice(0, Math.max(0, size || defaultHashSize)),
+				hash: size => sourceHash.slice(0, Math.max(0, size || DEFAULT_HASH_SIZE)),
 				name: () =>
 					emittedName.slice(0, Math.max(0, emittedName.length - extname(emittedName).length))
 			}
@@ -62,13 +91,9 @@ function generateAssetFileName(
 	);
 }
 
-function reserveFileNameInBundle(
-	fileName: string,
-	{ bundle }: FileEmitterOutput,
-	warn: WarningHandler
-) {
+function reserveFileNameInBundle(fileName: string, { bundle }: FileEmitterOutput, log: LogHandler) {
 	if (bundle[lowercaseBundleKeys].has(fileName.toLowerCase())) {
-		warn(errorFileNameConflict(fileName));
+		log(LOGLEVEL_WARN, logFileNameConflict(fileName));
 	} else {
 		bundle[fileName] = FILE_PLACEHOLDER;
 	}
@@ -86,6 +111,7 @@ type ConsumedPrebuiltChunk = EmittedPrebuiltChunk & {
 
 type ConsumedAsset = EmittedAsset & {
 	needsCodeReference: boolean;
+	originalFileName: string | null;
 	referenceId: string;
 };
 
@@ -97,10 +123,11 @@ interface EmittedFile {
 	[key: string]: unknown;
 	fileName?: string;
 	name?: string;
+	originalFileName?: string | null;
 	type: EmittedFileType;
 }
 
-const emittedFileTypes: Set<EmittedFileType> = new Set(['chunk', 'asset', 'prebuilt-chunk']);
+const emittedFileTypes = new Set<EmittedFileType>(['chunk', 'asset', 'prebuilt-chunk']);
 
 function hasValidType(emittedFile: unknown): emittedFile is {
 	[key: string]: unknown;
@@ -128,7 +155,7 @@ function getValidSource(
 	if (!(typeof source === 'string' || source instanceof Uint8Array)) {
 		const assetName = emittedFile.fileName || emittedFile.name || fileReferenceId;
 		return error(
-			errorFailedValidation(
+			logFailedValidation(
 				`Could not set source for ${
 					typeof assetName === 'string' ? `asset "${assetName}"` : 'unnamed asset'
 				}, asset source needs to be a string, Uint8Array or Buffer.`
@@ -140,7 +167,7 @@ function getValidSource(
 
 function getAssetFileName(file: ConsumedAsset, referenceId: string): string {
 	if (typeof file.fileName !== 'string') {
-		return error(errorAssetNotFinalisedForFileName(file.name || referenceId));
+		return error(logAssetNotFinalisedForFileName(file.name || referenceId));
 	}
 	return file.fileName;
 }
@@ -155,13 +182,14 @@ function getChunkFileName(
 	if (facadeChunkByModule) {
 		return facadeChunkByModule.get(file.module!)!.getFileName();
 	}
-	return error(errorChunkNotGeneratedForFileName(file.fileName || file.name));
+	return error(logChunkNotGeneratedForFileName(file.fileName || file.name));
 }
 
 interface FileEmitterOutput {
 	bundle: OutputBundleWithPlaceholders;
-	fileNamesBySource: Map<string, string>;
+	fileNamesBySourceHash: Map<string, string>;
 	outputOptions: NormalizedOutputOptions;
+	getHash: GetHash;
 }
 
 export class FileEmitter {
@@ -185,7 +213,7 @@ export class FileEmitter {
 	public emitFile = (emittedFile: unknown): string => {
 		if (!hasValidType(emittedFile)) {
 			return error(
-				errorFailedValidation(
+				logFailedValidation(
 					`Emitted files must be of type "asset", "chunk" or "prebuilt-chunk", received "${
 						emittedFile && (emittedFile as any).type
 					}".`
@@ -197,7 +225,7 @@ export class FileEmitter {
 		}
 		if (!hasValidName(emittedFile)) {
 			return error(
-				errorFailedValidation(
+				logFailedValidation(
 					`The "fileName" or "name" properties of emitted chunks and assets must be strings that are neither absolute nor relative paths, received "${
 						emittedFile.fileName || emittedFile.name
 					}".`
@@ -213,13 +241,13 @@ export class FileEmitter {
 	public finaliseAssets = (): void => {
 		for (const [referenceId, emittedFile] of this.filesByReferenceId) {
 			if (emittedFile.type === 'asset' && typeof emittedFile.fileName !== 'string')
-				return error(errorNoAssetSourceSet(emittedFile.name || referenceId));
+				return error(logNoAssetSourceSet(emittedFile.name || referenceId));
 		}
 	};
 
 	public getFileName = (fileReferenceId: string): string => {
 		const emittedFile = this.filesByReferenceId.get(fileReferenceId);
-		if (!emittedFile) return error(errorFileReferenceIdNotFoundForFilename(fileReferenceId));
+		if (!emittedFile) return error(logFileReferenceIdNotFoundForFilename(fileReferenceId));
 		if (emittedFile.type === 'chunk') {
 			return getChunkFileName(emittedFile, this.facadeChunkByModule);
 		}
@@ -231,16 +259,16 @@ export class FileEmitter {
 
 	public setAssetSource = (referenceId: string, requestedSource: unknown): void => {
 		const consumedFile = this.filesByReferenceId.get(referenceId);
-		if (!consumedFile) return error(errorAssetReferenceIdNotFoundForSetSource(referenceId));
+		if (!consumedFile) return error(logAssetReferenceIdNotFoundForSetSource(referenceId));
 		if (consumedFile.type !== 'asset') {
 			return error(
-				errorFailedValidation(
+				logFailedValidation(
 					`Asset sources can only be set for emitted assets but "${referenceId}" is an emitted chunk.`
 				)
 			);
 		}
 		if (consumedFile.source !== undefined) {
-			return error(errorAssetSourceAlreadySet(consumedFile.name || referenceId));
+			return error(logAssetSourceAlreadySet(consumedFile.name || referenceId));
 		}
 		const source = getValidSource(requestedSource, consumedFile, referenceId);
 		if (this.output) {
@@ -261,14 +289,16 @@ export class FileEmitter {
 		bundle: OutputBundleWithPlaceholders,
 		outputOptions: NormalizedOutputOptions
 	): void => {
+		const getHash = hasherByType[outputOptions.hashCharacters];
 		const output = (this.output = {
 			bundle,
-			fileNamesBySource: new Map<string, string>(),
+			fileNamesBySourceHash: new Map<string, string>(),
+			getHash,
 			outputOptions
 		});
 		for (const emittedFile of this.filesByReferenceId.values()) {
 			if (emittedFile.fileName) {
-				reserveFileNameInBundle(emittedFile.fileName, output, this.options.onwarn);
+				reserveFileNameInBundle(emittedFile.fileName, output, this.options.onLog);
 			}
 		}
 		const consumedAssetsByHash = new Map<string, ConsumedAsset[]>();
@@ -277,7 +307,7 @@ export class FileEmitter {
 				if (consumedFile.fileName) {
 					this.finalizeAdditionalAsset(consumedFile, consumedFile.source, output);
 				} else {
-					const sourceHash = getSourceHash(consumedFile.source);
+					const sourceHash = getHash(consumedFile.source);
 					getOrCreate(consumedAssetsByHash, sourceHash, () => []).push(consumedFile);
 				}
 			} else if (consumedFile.type === 'prebuilt-chunk') {
@@ -297,7 +327,7 @@ export class FileEmitter {
 		let referenceId = idBase;
 
 		do {
-			referenceId = createHash().update(referenceId).digest('hex').slice(0, 8);
+			referenceId = getHash64(referenceId).slice(0, 8).replaceAll('-', '$');
 		} while (
 			this.filesByReferenceId.has(referenceId) ||
 			this.outputFileEmitters.some(({ filesByReferenceId }) => filesByReferenceId.has(referenceId))
@@ -327,7 +357,9 @@ export class FileEmitter {
 			moduleIds: [],
 			modules: {},
 			name: prebuiltChunk.fileName,
+			preliminaryFileName: prebuiltChunk.fileName,
 			referencedFiles: [],
+			sourcemapFileName: prebuiltChunk.sourcemapFileName || null,
 			type: 'chunk'
 		};
 	}
@@ -337,10 +369,15 @@ export class FileEmitter {
 			emittedAsset.source === undefined
 				? undefined
 				: getValidSource(emittedAsset.source, emittedAsset, null);
+		const originalFileName = emittedAsset.originalFileName || null;
+		if (typeof originalFileName === 'string') {
+			this.graph.watchFiles[originalFileName] = true;
+		}
 		const consumedAsset: ConsumedAsset = {
 			fileName: emittedAsset.fileName,
 			name: emittedAsset.name,
 			needsCodeReference: !!emittedAsset.needsCodeReference,
+			originalFileName,
 			referenceId: '',
 			source,
 			type: 'asset'
@@ -365,7 +402,7 @@ export class FileEmitter {
 	) {
 		const { fileName, source } = consumedAsset;
 		if (fileName) {
-			reserveFileNameInBundle(fileName, output, this.options.onwarn);
+			reserveFileNameInBundle(fileName, output, this.options.onLog);
 		}
 		if (source !== undefined) {
 			this.finalizeAdditionalAsset(consumedAsset, source, output);
@@ -374,11 +411,11 @@ export class FileEmitter {
 
 	private emitChunk(emittedChunk: EmittedFile): string {
 		if (this.graph.phase > BuildPhase.LOAD_AND_PARSE) {
-			return error(errorInvalidRollupPhaseForChunkEmission());
+			return error(logInvalidRollupPhaseForChunkEmission());
 		}
 		if (typeof emittedChunk.id !== 'string') {
 			return error(
-				errorFailedValidation(
+				logFailedValidation(
 					`Emitted chunks need to have a valid string id, received "${emittedChunk.id}"`
 				)
 			);
@@ -407,7 +444,7 @@ export class FileEmitter {
 	): string {
 		if (typeof emitPrebuiltChunk.code !== 'string') {
 			return error(
-				errorFailedValidation(
+				logFailedValidation(
 					`Emitted prebuilt chunks need to have a valid string code, received "${emitPrebuiltChunk.code}".`
 				)
 			);
@@ -417,7 +454,7 @@ export class FileEmitter {
 			isPathFragment(emitPrebuiltChunk.fileName)
 		) {
 			return error(
-				errorFailedValidation(
+				logFailedValidation(
 					`The "fileName" property of emitted prebuilt chunks must be strings that are neither absolute nor relative paths, received "${emitPrebuiltChunk.fileName}".`
 				)
 			);
@@ -444,23 +481,27 @@ export class FileEmitter {
 	private finalizeAdditionalAsset(
 		consumedFile: Readonly<ConsumedAsset>,
 		source: string | Uint8Array,
-		{ bundle, fileNamesBySource, outputOptions }: FileEmitterOutput
+		{ bundle, fileNamesBySourceHash, getHash, outputOptions }: FileEmitterOutput
 	): void {
-		let { fileName, needsCodeReference, referenceId } = consumedFile;
+		let { fileName, name, needsCodeReference, originalFileName, referenceId } = consumedFile;
 
 		// Deduplicate assets if an explicit fileName is not provided
 		if (!fileName) {
-			const sourceHash = getSourceHash(source);
-			fileName = fileNamesBySource.get(sourceHash);
+			const sourceHash = getHash(source);
+			fileName = fileNamesBySourceHash.get(sourceHash);
 			if (!fileName) {
 				fileName = generateAssetFileName(
-					consumedFile.name,
+					name,
+					name ? [name] : [],
 					source,
+					originalFileName,
+					originalFileName ? [originalFileName] : [],
 					sourceHash,
 					outputOptions,
-					bundle
+					bundle,
+					this.options
 				);
-				fileNamesBySource.set(sourceHash, fileName);
+				fileNamesBySourceHash.set(sourceHash, fileName);
 			}
 		}
 
@@ -471,11 +512,39 @@ export class FileEmitter {
 		const existingAsset = bundle[fileName];
 		if (existingAsset?.type === 'asset') {
 			existingAsset.needsCodeReference &&= needsCodeReference;
+			if (name) {
+				existingAsset.names.push(name);
+			}
+			if (originalFileName) {
+				existingAsset.originalFileNames.push(originalFileName);
+			}
 		} else {
+			const { options } = this;
 			bundle[fileName] = {
 				fileName,
-				name: consumedFile.name,
+				get name() {
+					// Additionally, this should be non-enumerable in the next major
+					warnDeprecation(
+						'Accessing the "name" property of emitted assets in the bundle is deprecated. Use the "names" property instead.',
+						URL_GENERATEBUNDLE,
+						false,
+						options
+					);
+					return name;
+				},
+				names: name ? [name] : [],
 				needsCodeReference,
+				get originalFileName() {
+					// Additionally, this should be non-enumerable in the next major
+					warnDeprecation(
+						'Accessing the "originalFileName" property of emitted assets in the bundle is deprecated. Use the "originalFileNames" property instead.',
+						URL_GENERATEBUNDLE,
+						false,
+						options
+					);
+					return originalFileName;
+				},
+				originalFileNames: originalFileName ? [originalFileName] : [],
 				source,
 				type: 'asset'
 			};
@@ -483,10 +552,11 @@ export class FileEmitter {
 	}
 
 	private finalizeAssetsWithSameSource(
-		consumedFiles: ReadonlyArray<ConsumedAsset>,
+		consumedFiles: readonly ConsumedAsset[],
 		sourceHash: string,
-		{ bundle, fileNamesBySource, outputOptions }: FileEmitterOutput
+		{ bundle, fileNamesBySourceHash, outputOptions }: FileEmitterOutput
 	): void {
+		const { names, originalFileNames } = getNamesFromAssets(consumedFiles);
 		let fileName = '';
 		let usedConsumedFile: ConsumedAsset;
 		let needsCodeReference = true;
@@ -494,10 +564,14 @@ export class FileEmitter {
 			needsCodeReference &&= consumedFile.needsCodeReference;
 			const assetFileName = generateAssetFileName(
 				consumedFile.name,
+				names,
 				consumedFile.source!,
+				consumedFile.originalFileName,
+				originalFileNames,
 				sourceHash,
 				outputOptions,
-				bundle
+				bundle,
+				this.options
 			);
 			if (
 				!fileName ||
@@ -508,7 +582,7 @@ export class FileEmitter {
 				usedConsumedFile = consumedFile;
 			}
 		}
-		fileNamesBySource.set(sourceHash, fileName);
+		fileNamesBySourceHash.set(sourceHash, fileName);
 
 		for (const consumedFile of consumedFiles) {
 			// We must not modify the original assets to avoid interaction between outputs
@@ -516,12 +590,55 @@ export class FileEmitter {
 			this.filesByReferenceId.set(consumedFile.referenceId, assetWithFileName);
 		}
 
+		const { options } = this;
 		bundle[fileName] = {
 			fileName,
-			name: usedConsumedFile!.name,
+			get name() {
+				// Additionally, this should be non-enumerable in the next major
+				warnDeprecation(
+					'Accessing the "name" property of emitted assets in the bundle is deprecated. Use the "names" property instead.',
+					URL_GENERATEBUNDLE,
+					false,
+					options
+				);
+				return usedConsumedFile!.name;
+			},
+			names,
 			needsCodeReference,
+			get originalFileName() {
+				// Additionally, this should be non-enumerable in the next major
+				warnDeprecation(
+					'Accessing the "originalFileName" property of emitted assets in the bundle is deprecated. Use the "originalFileNames" property instead.',
+					URL_GENERATEBUNDLE,
+					false,
+					options
+				);
+				return usedConsumedFile!.originalFileName;
+			},
+			originalFileNames,
 			source: usedConsumedFile!.source!,
 			type: 'asset'
 		};
 	}
+}
+
+function getNamesFromAssets(consumedFiles: readonly ConsumedAsset[]): {
+	names: string[];
+	originalFileNames: string[];
+} {
+	const names: string[] = [];
+	const originalFileNames: string[] = [];
+	for (const { name, originalFileName } of consumedFiles) {
+		if (typeof name === 'string') {
+			names.push(name);
+		}
+		if (originalFileName) {
+			originalFileNames.push(originalFileName);
+		}
+	}
+	originalFileNames.sort();
+	// Sort by length first and then alphabetically so that the order is stable
+	// and the shortest names come first
+	names.sort((a, b) => a.length - b.length || (a > b ? 1 : a === b ? 0 : -1));
+	return { names, originalFileNames };
 }

@@ -5,16 +5,21 @@ const ID_MAIN = path.join(__dirname, 'main.js');
 module.exports = defineTest({
 	description: 'handles when a low resolution sourcemap is used to report an error',
 	options: {
-		plugins: {
-			name: 'test-plugin',
-			transform() {
-				// each entry of each line consist of
-				// [generatedColumn, sourceIndex, sourceLine, sourceColumn];
-				// this mapping only maps the first line to itself
-				const decodedMap = [[[0], [0, 0, 0, 0], [1]]];
-				return { code: 'export default this', map: { mappings: encode(decodedMap), sources: [] } };
+		plugins: [
+			{
+				name: 'test-plugin',
+				transform() {
+					// each entry of each line consist of
+					// [generatedColumn, sourceIndex, sourceLine, sourceColumn];
+					// this mapping only maps the first line to itself
+					const decodedMap = [[[0], [0, 0, 0, 0], [1]]];
+					return {
+						code: 'export default this',
+						map: { mappings: encode(decodedMap), sources: [] }
+					};
+				}
 			}
-		}
+		]
 	},
 	warnings: [
 		{
@@ -29,7 +34,7 @@ module.exports = defineTest({
 				line: 1
 			},
 			message:
-				"The 'this' keyword is equivalent to 'undefined' at the top level of an ES module, and has been rewritten",
+				"main.js (1:0): The 'this' keyword is equivalent to 'undefined' at the top level of an ES module, and has been rewritten",
 			pos: 15,
 			url: 'https://rollupjs.org/troubleshooting/#error-this-is-undefined'
 		}

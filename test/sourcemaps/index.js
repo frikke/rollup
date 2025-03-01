@@ -5,7 +5,7 @@ const path = require('node:path');
 // @ts-expect-error not included in types
 const rollup = require('../../dist/rollup');
 // @ts-expect-error not included in types
-const { compareWarnings, runTestSuiteWithSamples } = require('../utils.js');
+const { compareLogs, runTestSuiteWithSamples } = require('../testHelpers.js');
 
 const FORMATS = ['amd', 'cjs', 'system', 'es', 'iife', 'umd'];
 
@@ -55,12 +55,13 @@ runTestSuiteWithSamples(
 
 async function generateAndTestBundle(bundle, outputOptions, config, format, warnings) {
 	if (config.warnings) {
-		compareWarnings(warnings, config.warnings);
+		compareLogs(warnings, config.warnings);
 	} else if (warnings.length > 0) {
 		throw new Error(`Unexpected warnings`);
 	}
+
 	const {
-		output: [{ code, map, fileName }]
+		output: [{ code, map, fileName, sourcemapFileName }]
 	} = await bundle.write(outputOptions);
-	await config.test(code, map, { fileName, format });
+	await config.test(code, map, { fileName, sourcemapFileName, format });
 }

@@ -1,19 +1,23 @@
 import type {
 	ExternalOption,
 	InputOptions,
+	LogHandler,
 	MergedRollupOptions,
 	OutputOptions,
+	Plugin,
 	RollupCache,
-	RollupOptions,
-	WarningHandler
+	RollupOptions
 } from '../../rollup/types';
 import { ensureArray } from '../ensureArray';
-import { URL_OUTPUT_GENERATEDCODE, URL_TREESHAKE } from '../urls';
+import { getLogger } from '../logger';
+import { LOGLEVEL_INFO } from '../logging';
+import { URL_JSX, URL_OUTPUT_GENERATEDCODE, URL_TREESHAKE } from '../urls';
 import type { CommandConfigObject } from './normalizeInputOptions';
 import {
-	defaultOnWarn,
 	generatedCodePresets,
 	type GenericConfigObject,
+	getOnLog,
+	jsxPresets,
 	normalizePluginOption,
 	objectifyOption,
 	objectifyOptionWithPresets,
@@ -21,7 +25,7 @@ import {
 	warnUnknownOptions
 } from './options';
 
-export const commandAliases: { [key: string]: string } = {
+export const commandAliases: Record<string, string> = {
 	c: 'config',
 	d: 'dir',
 	e: 'external',
@@ -41,12 +45,16 @@ const EMPTY_COMMAND_OPTIONS = { external: [], globals: undefined };
 
 export async function mergeOptions(
 	config: RollupOptions,
+	watchMode: boolean,
 	rawCommandOptions: GenericConfigObject = EMPTY_COMMAND_OPTIONS,
-	defaultOnWarnHandler: WarningHandler = defaultOnWarn
+	printLog?: LogHandler
 ): Promise<MergedRollupOptions> {
 	const command = getCommandOptions(rawCommandOptions);
-	const inputOptions = await mergeInputOptions(config, command, defaultOnWarnHandler);
-	const warn = inputOptions.onwarn as WarningHandler;
+	const plugins = await normalizePluginOption(config.plugins);
+	const logLevel = config.logLevel || LOGLEVEL_INFO;
+	const onLog = getOnLog(config, logLevel, printLog);
+	const log = getLogger(plugins, onLog, watchMode, logLevel);
+	const inputOptions = mergeInputOptions(config, command, plugins, log, onLog);
 	if (command.output) {
 		Object.assign(command, command.output);
 	}
@@ -54,7 +62,7 @@ export async function mergeOptions(
 	if (outputOptionsArray.length === 0) outputOptionsArray.push({});
 	const outputOptions = await Promise.all(
 		outputOptionsArray.map(singleOutputOptions =>
-			mergeOutputOptions(singleOutputOptions, command, warn)
+			mergeOutputOptions(singleOutputOptions, command, log)
 		)
 	);
 
@@ -68,16 +76,19 @@ export async function mergeOptions(
 			...Object.keys(commandAliases),
 			'bundleConfigAsCjs',
 			'config',
+			'configImportAttributesKey',
+			'configPlugin',
 			'environment',
+			'failAfterWarnings',
+			'filterLogs',
+			'forceExit',
 			'plugin',
 			'silent',
-			'failAfterWarnings',
 			'stdin',
-			'waitForBundleInput',
-			'configPlugin'
+			'waitForBundleInput'
 		],
 		'CLI flags',
-		warn,
+		log,
 		/^_$|output$|config/
 	);
 	(inputOptions as MergedRollupOptions).output = outputOptions;
@@ -101,7 +112,7 @@ function getCommandOptions(rawCommandOptions: GenericConfigObject): CommandConfi
 							external.push(id);
 						}
 						return globals;
-				  }, Object.create(null))
+					}, Object.create(null))
 				: undefined
 	};
 }
@@ -110,35 +121,36 @@ type CompleteInputOptions<U extends keyof InputOptions> = {
 	[K in U]: InputOptions[K];
 };
 
-async function mergeInputOptions(
+function mergeInputOptions(
 	config: InputOptions,
 	overrides: CommandConfigObject,
-	defaultOnWarnHandler: WarningHandler
-): Promise<InputOptions> {
+	plugins: Plugin[],
+	log: LogHandler,
+	onLog: LogHandler
+): InputOptions {
 	const getOption = (name: keyof InputOptions): any => overrides[name] ?? config[name];
 	const inputOptions: CompleteInputOptions<keyof InputOptions> = {
-		acorn: getOption('acorn'),
-		acornInjectPlugins: config.acornInjectPlugins as
-			| (() => unknown)[]
-			| (() => unknown)
-			| undefined,
 		cache: config.cache as false | RollupCache | undefined,
 		context: getOption('context'),
 		experimentalCacheExpiry: getOption('experimentalCacheExpiry'),
 		experimentalLogSideEffects: getOption('experimentalLogSideEffects'),
 		external: getExternal(config, overrides),
-		inlineDynamicImports: getOption('inlineDynamicImports'),
 		input: getOption('input') || [],
+		jsx: getObjectOption(
+			config,
+			overrides,
+			'jsx',
+			objectifyOptionWithPresets(jsxPresets, 'jsx', URL_JSX, 'false, ')
+		),
+		logLevel: getOption('logLevel'),
 		makeAbsoluteExternalsRelative: getOption('makeAbsoluteExternalsRelative'),
-		manualChunks: getOption('manualChunks'),
 		maxParallelFileOps: getOption('maxParallelFileOps'),
-		maxParallelFileReads: getOption('maxParallelFileReads'),
 		moduleContext: getOption('moduleContext'),
-		onwarn: getOnWarn(config, defaultOnWarnHandler),
+		onLog,
+		onwarn: undefined,
 		perf: getOption('perf'),
-		plugins: await normalizePluginOption(config.plugins),
+		plugins,
 		preserveEntrySignatures: getOption('preserveEntrySignatures'),
-		preserveModules: getOption('preserveModules'),
 		preserveSymlinks: getOption('preserveSymlinks'),
 		shimMissingExports: getOption('shimMissingExports'),
 		strictDeprecations: getOption('strictDeprecations'),
@@ -151,13 +163,7 @@ async function mergeInputOptions(
 		watch: getWatch(config, overrides)
 	};
 
-	warnUnknownOptions(
-		config,
-		Object.keys(inputOptions),
-		'input options',
-		inputOptions.onwarn as WarningHandler,
-		/^output$/
-	);
+	warnUnknownOptions(config, Object.keys(inputOptions), 'input options', log, /^output$/);
 	return inputOptions;
 }
 
@@ -169,15 +175,12 @@ const getExternal = (config: InputOptions, overrides: CommandConfigObject): Exte
 		: [...ensureArray(configExternal), ...overrides.external];
 };
 
-const getOnWarn = (config: InputOptions, defaultOnWarnHandler: WarningHandler): WarningHandler =>
-	config.onwarn ? warning => config.onwarn!(warning, defaultOnWarnHandler) : defaultOnWarnHandler;
-
 const getObjectOption = <T extends object>(
 	config: T,
 	overrides: T,
 	name: keyof T,
 	objectifyValue = objectifyOption
-) => {
+): any => {
 	const commandOption = normalizeObjectOptionValue(overrides[name], objectifyValue);
 	const configOption = normalizeObjectOptionValue(config[name], objectifyValue);
 	if (commandOption !== undefined) {
@@ -222,7 +225,7 @@ type CompleteOutputOptions<U extends keyof OutputOptions> = {
 async function mergeOutputOptions(
 	config: OutputOptions,
 	overrides: OutputOptions,
-	warn: WarningHandler
+	log: LogHandler
 ): Promise<OutputOptions> {
 	const getOption = (name: keyof OutputOptions): any => overrides[name] ?? config[name];
 	const outputOptions: CompleteOutputOptions<keyof OutputOptions> = {
@@ -232,15 +235,14 @@ async function mergeOutputOptions(
 		chunkFileNames: getOption('chunkFileNames'),
 		compact: getOption('compact'),
 		dir: getOption('dir'),
-		dynamicImportFunction: getOption('dynamicImportFunction'),
 		dynamicImportInCjs: getOption('dynamicImportInCjs'),
 		entryFileNames: getOption('entryFileNames'),
 		esModule: getOption('esModule'),
-		experimentalDeepDynamicChunkOptimization: getOption('experimentalDeepDynamicChunkOptimization'),
 		experimentalMinChunkSize: getOption('experimentalMinChunkSize'),
 		exports: getOption('exports'),
 		extend: getOption('extend'),
 		externalImportAssertions: getOption('externalImportAssertions'),
+		externalImportAttributes: getOption('externalImportAttributes'),
 		externalLiveBindings: getOption('externalLiveBindings'),
 		file: getOption('file'),
 		footer: getOption('footer'),
@@ -258,7 +260,9 @@ async function mergeOutputOptions(
 			)
 		),
 		globals: getOption('globals'),
+		hashCharacters: getOption('hashCharacters'),
 		hoistTransitiveImports: getOption('hoistTransitiveImports'),
+		importAttributesKey: getOption('importAttributesKey'),
 		indent: getOption('indent'),
 		inlineDynamicImports: getOption('inlineDynamicImports'),
 		interop: getOption('interop'),
@@ -266,26 +270,28 @@ async function mergeOutputOptions(
 		manualChunks: getOption('manualChunks'),
 		minifyInternalExports: getOption('minifyInternalExports'),
 		name: getOption('name'),
-		namespaceToStringTag: getOption('namespaceToStringTag'),
 		noConflict: getOption('noConflict'),
 		outro: getOption('outro'),
 		paths: getOption('paths'),
 		plugins: await normalizePluginOption(config.plugins),
-		preferConst: getOption('preferConst'),
 		preserveModules: getOption('preserveModules'),
 		preserveModulesRoot: getOption('preserveModulesRoot'),
+		reexportProtoFromExternal: getOption('reexportProtoFromExternal'),
 		sanitizeFileName: getOption('sanitizeFileName'),
 		sourcemap: getOption('sourcemap'),
 		sourcemapBaseUrl: getOption('sourcemapBaseUrl'),
+		sourcemapDebugIds: getOption('sourcemapDebugIds'),
 		sourcemapExcludeSources: getOption('sourcemapExcludeSources'),
 		sourcemapFile: getOption('sourcemapFile'),
+		sourcemapFileNames: getOption('sourcemapFileNames'),
 		sourcemapIgnoreList: getOption('sourcemapIgnoreList'),
 		sourcemapPathTransform: getOption('sourcemapPathTransform'),
 		strict: getOption('strict'),
 		systemNullSetters: getOption('systemNullSetters'),
-		validate: getOption('validate')
+		validate: getOption('validate'),
+		virtualDirname: getOption('virtualDirname')
 	};
 
-	warnUnknownOptions(config, Object.keys(outputOptions), 'output options', warn);
+	warnUnknownOptions(config, Object.keys(outputOptions), 'output options', log);
 	return outputOptions;
 }

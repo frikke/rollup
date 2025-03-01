@@ -1,24 +1,25 @@
 import { toBase64 } from './base64';
-import { error, errorFailedValidation } from './error';
+import { error, logFailedValidation } from './logs';
 
-// Four random characters from the private use area to minimize risk of conflicts
+// Four random characters from the private use area to minimize risk of
+// conflicts
 const hashPlaceholderLeft = '!~{';
 const hashPlaceholderRight = '}~';
 const hashPlaceholderOverhead = hashPlaceholderLeft.length + hashPlaceholderRight.length;
 
-// This is the size of a sha256
-export const maxHashSize = 64;
-export const defaultHashSize = 8;
+// This is the size of a 128-bits xxhash with base64url encoding
+const MAX_HASH_SIZE = 21;
+export const DEFAULT_HASH_SIZE = 8;
 
-export type HashPlaceholderGenerator = (optionName: string, hashSize?: number) => string;
+export type HashPlaceholderGenerator = (optionName: string, hashSize: number) => string;
 
 export const getHashPlaceholderGenerator = (): HashPlaceholderGenerator => {
 	let nextIndex = 0;
-	return (optionName: string, hashSize: number = defaultHashSize) => {
-		if (hashSize > maxHashSize) {
+	return (optionName, hashSize) => {
+		if (hashSize > MAX_HASH_SIZE) {
 			return error(
-				errorFailedValidation(
-					`Hashes cannot be longer than ${maxHashSize} characters, received ${hashSize}. Check the "${optionName}" option.`
+				logFailedValidation(
+					`Hashes cannot be longer than ${MAX_HASH_SIZE} characters, received ${hashSize}. Check the "${optionName}" option.`
 				)
 			);
 		}
@@ -28,7 +29,7 @@ export const getHashPlaceholderGenerator = (): HashPlaceholderGenerator => {
 		)}${hashPlaceholderRight}`;
 		if (placeholder.length > hashSize) {
 			return error(
-				errorFailedValidation(
+				logFailedValidation(
 					`To generate hashes for this number of chunks (currently ${nextIndex}), you need a minimum hash size of ${placeholder.length}, received ${hashSize}. Check the "${optionName}" option.`
 				)
 			);
@@ -39,7 +40,7 @@ export const getHashPlaceholderGenerator = (): HashPlaceholderGenerator => {
 
 const REPLACER_REGEX = new RegExp(
 	`${hashPlaceholderLeft}[0-9a-zA-Z_$]{1,${
-		maxHashSize - hashPlaceholderOverhead
+		MAX_HASH_SIZE - hashPlaceholderOverhead
 	}}${hashPlaceholderRight}`,
 	'g'
 );

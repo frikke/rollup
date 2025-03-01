@@ -1,5 +1,5 @@
 const assert = require('node:assert');
-const { replaceDirectoryInStringifiedObject } = require('../../../utils');
+const { replaceDirectoryInStringifiedObject } = require('../../../testHelpers');
 
 module.exports = defineTest({
 	description: 'replaces hashes when mutating chunk info in renderChunk',
@@ -21,7 +21,7 @@ module.exports = defineTest({
 			generateBundle(options, bundle) {
 				const sanitizedBundle = JSON.parse(
 					replaceDirectoryInStringifiedObject(bundle, __dirname).replace(
-						/(entry-\w+)-\w+\.js/g,
+						/(entry-\w+)-[\w|-]+\.js/g,
 						(match, name) => `${name}.js`
 					)
 				);
@@ -45,8 +45,10 @@ module.exports = defineTest({
 						implicitlyLoadedBefore: [],
 						importedBindings: {},
 						imports: [],
+						preliminaryFileName: 'entry-main1-!~{001}~.js',
 						referencedFiles: [],
-						map: null
+						map: null,
+						sourcemapFileName: null
 					},
 					'entry-main2.js': {
 						exports: [],
@@ -62,8 +64,10 @@ module.exports = defineTest({
 						implicitlyLoadedBefore: [],
 						importedBindings: { 'entry-main1.js': ['added'] },
 						imports: ['entry-main1.js'],
+						preliminaryFileName: 'entry-main2-!~{002}~.js',
 						referencedFiles: [],
-						map: null
+						map: null,
+						sourcemapFileName: null
 					}
 				});
 			}

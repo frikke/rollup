@@ -1,17 +1,19 @@
 import type MagicString from 'magic-string';
 import ExternalModule from '../../ExternalModule';
 import type Module from '../../Module';
-import type { GetInterop, NormalizedOutputOptions } from '../../rollup/types';
-import type { PluginDriver } from '../../utils/PluginDriver';
+import type { AstNode, GetInterop, NormalizedOutputOptions } from '../../rollup/types';
 import { EMPTY_ARRAY } from '../../utils/blank';
 import type { GenerateCodeSnippets } from '../../utils/generateCodeSnippets';
 import {
 	INTEROP_NAMESPACE_DEFAULT_ONLY_VARIABLE,
 	namespaceInteropHelpersByInteropType
 } from '../../utils/interopHelpers';
+import type { PluginDriver } from '../../utils/PluginDriver';
 import { findFirstOccurrenceOutsideComment, type RenderOptions } from '../../utils/renderHelpers';
 import type { InclusionContext } from '../ExecutionContext';
 import type ChildScope from '../scopes/ChildScope';
+import type { ObjectPath } from '../utils/PathTracker';
+import { UnknownKey } from '../utils/PathTracker';
 import type NamespaceVariable from '../variables/NamespaceVariable';
 import ArrowFunctionExpression from './ArrowFunctionExpression';
 import AwaitExpression from './AwaitExpression';
@@ -21,36 +23,37 @@ import FunctionExpression from './FunctionExpression';
 import Identifier from './Identifier';
 import MemberExpression from './MemberExpression';
 import type * as NodeType from './NodeType';
-import type ObjectExpression from './ObjectExpression';
 import ObjectPattern from './ObjectPattern';
-import VariableDeclarator from './VariableDeclarator';
 import {
+	doNotDeoptimize,
 	type ExpressionNode,
 	type GenericEsTreeNode,
 	type IncludeChildren,
 	NodeBase
 } from './shared/Node';
+import VariableDeclarator from './VariableDeclarator';
 
 interface DynamicImportMechanism {
 	left: string;
 	right: string;
 }
 
-// TODO once ImportExpression follows official ESTree specs with "null" as
-//  default, keys.ts should be updated
 export default class ImportExpression extends NodeBase {
-	declare arguments: ObjectExpression[] | undefined;
+	declare options: ExpressionNode | null;
 	inlineNamespace: NamespaceVariable | null = null;
 	declare source: ExpressionNode;
 	declare type: NodeType.tImportExpression;
+	declare sourceAstNode: AstNode;
 
-	private assertions: string | null | true = null;
+	private hasUnknownAccessedKey = false;
+	private accessedPropKey = new Set<string>();
+	private attributes: string | null | true = null;
 	private mechanism: DynamicImportMechanism | null = null;
 	private namespaceExportName: string | false | undefined = undefined;
 	private resolution: Module | ExternalModule | string | null = null;
 	private resolutionString: string | null = null;
 
-	// Do not bind assertions
+	// Do not bind attributes
 	bind(): void {
 		this.source.bind();
 	}
@@ -81,12 +84,15 @@ export default class ImportExpression extends NodeBase {
 				return EMPTY_ARRAY;
 			}
 
-			// Case 1: const { foo } = await import('bar')
+			// Case 1: const { foo } / module = await import('bar')
 			if (parent2 instanceof VariableDeclarator) {
 				const declaration = parent2.id;
-				return declaration instanceof ObjectPattern
-					? getDeterministicObjectDestructure(declaration)
-					: undefined;
+				if (declaration instanceof Identifier) {
+					return this.hasUnknownAccessedKey ? undefined : [...this.accessedPropKey];
+				}
+				if (declaration instanceof ObjectPattern) {
+					return getDeterministicObjectDestructure(declaration);
+				}
 			}
 
 			// Case 2: (await import('bar')).foo
@@ -154,26 +160,43 @@ export default class ImportExpression extends NodeBase {
 	}
 
 	include(context: InclusionContext, includeChildrenRecursively: IncludeChildren): void {
-		if (!this.included) {
-			this.included = true;
-			this.context.includeDynamicImport(this);
-			this.scope.addAccessedDynamicImport(this);
-		}
+		if (!this.included) this.includeNode();
 		this.source.include(context, includeChildrenRecursively);
 	}
 
-	initialise(): void {
-		this.context.addDynamicImport(this);
+	includeNode() {
+		this.included = true;
+		this.scope.context.includeDynamicImport(this);
+		this.scope.addAccessedDynamicImport(this);
 	}
 
-	parseNode(esTreeNode: GenericEsTreeNode): void {
-		// Keep the source AST to be used by renderDynamicImport
-		super.parseNode(esTreeNode, ['source']);
+	includePath(path: ObjectPath): void {
+		if (!this.included) this.includeNode();
+		// Technically, this is not correct as dynamic imports return a Promise.
+		if (this.hasUnknownAccessedKey) return;
+		if (path[0] === UnknownKey) {
+			this.hasUnknownAccessedKey = true;
+		} else if (typeof path[0] === 'string') {
+			this.accessedPropKey.add(path[0]);
+		}
+		// Update included paths
+		this.scope.context.includeDynamicImport(this);
+	}
+
+	initialise(): void {
+		super.initialise();
+		this.scope.context.addDynamicImport(this);
+	}
+
+	parseNode(esTreeNode: GenericEsTreeNode): this {
+		this.sourceAstNode = esTreeNode.source;
+		return super.parseNode(esTreeNode);
 	}
 
 	render(code: MagicString, options: RenderOptions): void {
 		const {
-			snippets: { _, getDirectReturnFunction, getObject, getPropertyAccess }
+			snippets: { _, getDirectReturnFunction, getObject, getPropertyAccess },
+			importAttributesKey
 		} = options;
 		if (this.inlineNamespace) {
 			const [left, right] = getDirectReturnFunction([], {
@@ -209,14 +232,14 @@ export default class ImportExpression extends NodeBase {
 		} else {
 			this.source.render(code, options);
 		}
-		if (this.assertions !== true) {
-			if (this.arguments) {
+		if (this.attributes !== true) {
+			if (this.options) {
 				code.overwrite(this.source.end, this.end - 1, '', { contentOnly: true });
 			}
-			if (this.assertions) {
+			if (this.attributes) {
 				code.appendLeft(
 					this.end - 1,
-					`,${_}${getObject([['assert', this.assertions]], {
+					`,${_}${getObject([[importAttributesKey, this.attributes]], {
 						lineBreakIndent: null
 					})}`
 				);
@@ -233,14 +256,14 @@ export default class ImportExpression extends NodeBase {
 		accessedGlobalsByScope: Map<ChildScope, Set<string>>,
 		resolutionString: string,
 		namespaceExportName: string | false | undefined,
-		assertions: string | null | true
+		attributes: string | null | true
 	): void {
 		const { format } = options;
 		this.inlineNamespace = null;
 		this.resolution = resolution;
 		this.resolutionString = resolutionString;
 		this.namespaceExportName = namespaceExportName;
-		this.assertions = assertions;
+		this.attributes = attributes;
 		const accessedGlobals = [...(accessedImportGlobals[format] || [])];
 		let helper: string | null;
 		({ helper, mechanism: this.mechanism } = this.getDynamicImportMechanismAndHelper(
@@ -262,14 +285,11 @@ export default class ImportExpression extends NodeBase {
 		this.inlineNamespace = inlineNamespace;
 	}
 
-	protected applyDeoptimizations() {}
-
 	private getDynamicImportMechanismAndHelper(
 		resolution: Module | ExternalModule | string | null,
 		exportMode: 'none' | 'named' | 'default' | 'external',
 		{
 			compact,
-			dynamicImportFunction,
 			dynamicImportInCjs,
 			format,
 			generatedCode: { arrowFunctions },
@@ -282,7 +302,7 @@ export default class ImportExpression extends NodeBase {
 			{
 				customResolution: typeof this.resolution === 'string' ? this.resolution : null,
 				format,
-				moduleId: this.context.module.id,
+				moduleId: this.scope.context.module.id,
 				targetModuleId:
 					this.resolution && typeof this.resolution !== 'string' ? this.resolution.id : null
 			}
@@ -365,21 +385,12 @@ export default class ImportExpression extends NodeBase {
 					}
 				};
 			}
-			case 'es': {
-				if (dynamicImportFunction) {
-					return {
-						helper: null,
-						mechanism: {
-							left: `${dynamicImportFunction}(`,
-							right: ')'
-						}
-					};
-				}
-			}
 		}
 		return { helper: null, mechanism: null };
 	}
 }
+
+ImportExpression.prototype.applyDeoptimizations = doNotDeoptimize;
 
 function getInteropHelper(
 	resolution: Module | ExternalModule | string | null,
@@ -389,10 +400,10 @@ function getInteropHelper(
 	return exportMode === 'external'
 		? namespaceInteropHelpersByInteropType[
 				interop(resolution instanceof ExternalModule ? resolution.id : null)
-		  ]
+			]
 		: exportMode === 'default'
-		? INTEROP_NAMESPACE_DEFAULT_ONLY_VARIABLE
-		: null;
+			? INTEROP_NAMESPACE_DEFAULT_ONLY_VARIABLE
+			: null;
 }
 
 const accessedImportGlobals: Record<string, string[]> = {

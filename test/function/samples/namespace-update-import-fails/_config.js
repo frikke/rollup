@@ -1,6 +1,6 @@
 const assert = require('node:assert');
 const path = require('node:path');
-const { assertIncludes } = require('../../../utils.js');
+const { assertIncludes } = require('../../../testHelpers.js');
 const ID_MAIN = path.join(__dirname, 'main.js');
 
 module.exports = defineTest({
@@ -11,7 +11,7 @@ module.exports = defineTest({
 	warnings: [
 		{
 			code: 'ILLEGAL_REASSIGNMENT',
-			message: 'Illegal reassignment of import "exp" in "main.js".',
+			message: 'main.js (3:0): Illegal reassignment of import "exp" in "main.js".',
 			id: ID_MAIN,
 			pos: 31,
 			loc: {

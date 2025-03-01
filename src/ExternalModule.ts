@@ -1,9 +1,10 @@
 import ExternalVariable from './ast/variables/ExternalVariable';
 import type { CustomPluginOptions, ModuleInfo, NormalizedInputOptions } from './rollup/types';
 import { EMPTY_ARRAY } from './utils/blank';
-import { errorUnusedExternalImports, warnDeprecation } from './utils/error';
+import { cacheObjectGetters } from './utils/getter';
 import { makeLegal } from './utils/identifierHelpers';
-import { URL_THIS_GETMODULEINFO } from './utils/urls';
+import { LOGLEVEL_WARN } from './utils/logging';
+import { logUnusedExternalImports } from './utils/logs';
 
 export default class ExternalModule {
 	readonly dynamicImporters: string[] = [];
@@ -25,14 +26,14 @@ export default class ExternalModule {
 		moduleSideEffects: boolean | 'no-treeshake',
 		meta: CustomPluginOptions,
 		public readonly renormalizeRenderPath: boolean,
-		assertions: Record<string, string>
+		attributes: Record<string, string>
 	) {
 		this.suggestedVariableName = makeLegal(id.split(/[/\\]/).pop()!);
 
 		const { importers, dynamicImporters } = this;
-		const info: ModuleInfo = (this.info = {
-			assertions,
+		this.info = {
 			ast: null,
+			attributes,
 			code: null,
 			dynamicallyImportedIdResolutions: EMPTY_ARRAY,
 			dynamicallyImportedIds: EMPTY_ARRAY,
@@ -42,15 +43,6 @@ export default class ExternalModule {
 			exportedBindings: null,
 			exports: null,
 			hasDefaultExport: null,
-			get hasModuleSideEffects() {
-				warnDeprecation(
-					'Accessing ModuleInfo.hasModuleSideEffects from plugins is deprecated. Please use ModuleInfo.moduleSideEffects instead.',
-					URL_THIS_GETMODULEINFO,
-					true,
-					options
-				);
-				return info.moduleSideEffects;
-			},
 			id,
 			implicitlyLoadedAfterOneOf: EMPTY_ARRAY,
 			implicitlyLoadedBefore: EMPTY_ARRAY,
@@ -65,11 +57,11 @@ export default class ExternalModule {
 			meta,
 			moduleSideEffects,
 			syntheticNamedExports: false
-		});
-		// Hide the deprecated key so that it only warns when accessed explicitly
-		Object.defineProperty(this.info, 'hasModuleSideEffects', {
-			enumerable: false
-		});
+		};
+	}
+
+	cacheInfoGetters(): void {
+		cacheObjectGetters(this.info, ['dynamicImporters', 'importers']);
 	}
 
 	getVariableForExportName(name: string): [variable: ExternalVariable] {
@@ -109,6 +101,6 @@ export default class ExternalModule {
 			}
 		}
 		const importersArray = [...importersSet];
-		this.options.onwarn(errorUnusedExternalImports(this.id, unused, importersArray));
+		this.options.onLog(LOGLEVEL_WARN, logUnusedExternalImports(this.id, unused, importersArray));
 	}
 }

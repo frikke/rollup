@@ -1,4 +1,3 @@
-// eslint-disable-next-line import/no-unresolved
 import type * as rollup from './dist/rollup';
 
 // Plugin API
@@ -33,6 +32,12 @@ const _pluginHooks: rollup.Plugin = {
 		await this.resolve('rollup');
 	},
 	name: 'test',
+	renderChunk(_code, { modules }) {
+		for (const id in modules) {
+			// @ts-expect-error Cannot assign to 'code' because it is a read-only property
+			modules[id].code += '\n';
+		}
+	},
 	resolveId: {
 		async handler(source, _importer, _options) {
 			await this.resolve('rollup');
@@ -64,21 +69,19 @@ const _amdOutputOptions: rollup.OutputOptions['amd'][] = [
 		autoId: false
 	},
 	{
-		// @ts-expect-error for "basePath", "autoId" needs to be true
 		autoId: false,
+		// @ts-expect-error for "basePath", "autoId" needs to be true
 		basePath: '',
-		// @ts-expect-error cannot combine "id" and "basePath"
 		id: 'a'
 	},
 	{
-		// @ts-expect-error cannot combine "id" and "autoId"
 		autoId: true,
 		// @ts-expect-error cannot combine "id" and "autoId"
 		id: 'a'
 	},
 	{
-		basePath: '',
 		// @ts-expect-error cannot combine "id" and "basePath"
+		basePath: '',
 		id: 'a'
 	},
 	// @ts-expect-error needs "autoId" for "basePath"

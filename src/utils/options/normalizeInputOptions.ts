@@ -1,29 +1,21 @@
-import type * as acorn from 'acorn';
-import { importAssertions } from 'acorn-import-assertions';
 import type {
 	HasModuleSideEffects,
 	InputOptions,
 	ModuleSideEffectsOption,
 	NormalizedInputOptions,
-	RollupBuild,
-	WarningHandler
+	RollupBuild
 } from '../../rollup/types';
 import { EMPTY_ARRAY } from '../blank';
 import { ensureArray } from '../ensureArray';
-import { error, errorInvalidOption, warnDeprecationWithOptions } from '../error';
+import { getLogger } from '../logger';
+import { LOGLEVEL_INFO } from '../logging';
+import { error, logInvalidOption } from '../logs';
 import { resolve } from '../path';
-import relativeId from '../relativeId';
+import { URL_JSX, URL_TREESHAKE, URL_TREESHAKE_MODULESIDEEFFECTS } from '../urls';
 import {
-	URL_MAXPARALLELFILEOPS,
-	URL_OUTPUT_INLINEDYNAMICIMPORTS,
-	URL_OUTPUT_MANUALCHUNKS,
-	URL_OUTPUT_PRESERVEMODULES,
-	URL_TREESHAKE,
-	URL_TREESHAKE_MODULESIDEEFFECTS
-} from '../urls';
-import {
-	defaultOnWarn,
+	getOnLog,
 	getOptionWithPreset,
+	jsxPresets,
 	normalizePluginOption,
 	treeshakePresets,
 	warnUnknownOptions
@@ -32,10 +24,13 @@ import {
 export interface CommandConfigObject {
 	[key: string]: unknown;
 	external: (string | RegExp)[];
-	globals: { [id: string]: string } | undefined;
+	globals: Record<string, string> | undefined;
 }
 
-export async function normalizeInputOptions(config: InputOptions): Promise<{
+export async function normalizeInputOptions(
+	config: InputOptions,
+	watchMode: boolean
+): Promise<{
 	options: NormalizedInputOptions;
 	unsetOptions: Set<string>;
 }> {
@@ -44,29 +39,27 @@ export async function normalizeInputOptions(config: InputOptions): Promise<{
 	const unsetOptions = new Set<string>();
 
 	const context = config.context ?? 'undefined';
-	const onwarn = getOnwarn(config);
+	const plugins = await normalizePluginOption(config.plugins);
+	const logLevel = config.logLevel || LOGLEVEL_INFO;
+	const onLog = getLogger(plugins, getOnLog(config, logLevel), watchMode, logLevel);
 	const strictDeprecations = config.strictDeprecations || false;
-	const maxParallelFileOps = getmaxParallelFileOps(config, onwarn, strictDeprecations);
+	const maxParallelFileOps = getMaxParallelFileOps(config);
 	const options: NormalizedInputOptions & InputOptions = {
-		acorn: getAcorn(config) as unknown as NormalizedInputOptions['acorn'],
-		acornInjectPlugins: getAcornInjectPlugins(config),
 		cache: getCache(config),
 		context,
 		experimentalCacheExpiry: config.experimentalCacheExpiry ?? 10,
 		experimentalLogSideEffects: config.experimentalLogSideEffects || false,
 		external: getIdMatcher(config.external),
-		inlineDynamicImports: getInlineDynamicImports(config, onwarn, strictDeprecations),
 		input: getInput(config),
+		jsx: getJsx(config),
+		logLevel,
 		makeAbsoluteExternalsRelative: config.makeAbsoluteExternalsRelative ?? 'ifRelativeSource',
-		manualChunks: getManualChunks(config, onwarn, strictDeprecations),
 		maxParallelFileOps,
-		maxParallelFileReads: maxParallelFileOps,
 		moduleContext: getModuleContext(config, context),
-		onwarn,
+		onLog,
 		perf: config.perf || false,
-		plugins: await normalizePluginOption(config.plugins),
+		plugins,
 		preserveEntrySignatures: config.preserveEntrySignatures ?? 'exports-only',
-		preserveModules: getPreserveModules(config, onwarn, strictDeprecations),
 		preserveSymlinks: config.preserveSymlinks || false,
 		shimMissingExports: config.shimMissingExports || false,
 		strictDeprecations,
@@ -75,54 +68,20 @@ export async function normalizeInputOptions(config: InputOptions): Promise<{
 
 	warnUnknownOptions(
 		config,
-		[...Object.keys(options), 'watch'],
+		[...Object.keys(options), 'onwarn', 'watch'],
 		'input options',
-		options.onwarn,
+		onLog,
 		/^(output)$/
 	);
 	return { options, unsetOptions };
 }
-
-const getOnwarn = (config: InputOptions): NormalizedInputOptions['onwarn'] => {
-	const { onwarn } = config;
-	return onwarn
-		? warning => {
-				warning.toString = () => {
-					let warningString = '';
-
-					if (warning.plugin) warningString += `(${warning.plugin} plugin) `;
-					if (warning.loc)
-						warningString += `${relativeId(warning.loc.file!)} (${warning.loc.line}:${
-							warning.loc.column
-						}) `;
-					warningString += warning.message;
-
-					return warningString;
-				};
-				onwarn(warning, defaultOnWarn);
-		  }
-		: defaultOnWarn;
-};
-
-const getAcorn = (config: InputOptions): acorn.Options => ({
-	ecmaVersion: 'latest',
-	sourceType: 'module',
-	...config.acorn
-});
-
-const getAcornInjectPlugins = (
-	config: InputOptions
-): NormalizedInputOptions['acornInjectPlugins'] => [
-	importAssertions,
-	...ensureArray(config.acornInjectPlugins)
-];
 
 const getCache = (config: InputOptions): NormalizedInputOptions['cache'] =>
 	config.cache === true // `true` is the default
 		? undefined
 		: (config.cache as unknown as RollupBuild)?.cache || config.cache;
 
-const getIdMatcher = <T extends Array<any>>(
+const getIdMatcher = <T extends any[]>(
 	option:
 		| undefined
 		| boolean
@@ -152,63 +111,68 @@ const getIdMatcher = <T extends Array<any>>(
 	return () => false;
 };
 
-const getInlineDynamicImports = (
-	config: InputOptions,
-	warn: WarningHandler,
-	strictDeprecations: boolean
-): NormalizedInputOptions['inlineDynamicImports'] => {
-	const configInlineDynamicImports = config.inlineDynamicImports;
-	if (configInlineDynamicImports) {
-		warnDeprecationWithOptions(
-			'The "inlineDynamicImports" option is deprecated. Use the "output.inlineDynamicImports" option instead.',
-			URL_OUTPUT_INLINEDYNAMICIMPORTS,
-			true,
-			warn,
-			strictDeprecations
-		);
-	}
-	return configInlineDynamicImports;
-};
-
 const getInput = (config: InputOptions): NormalizedInputOptions['input'] => {
 	const configInput = config.input;
 	return configInput == null ? [] : typeof configInput === 'string' ? [configInput] : configInput;
 };
 
-const getManualChunks = (
-	config: InputOptions,
-	warn: WarningHandler,
-	strictDeprecations: boolean
-): NormalizedInputOptions['manualChunks'] => {
-	const configManualChunks = config.manualChunks;
-	if (configManualChunks) {
-		warnDeprecationWithOptions(
-			'The "manualChunks" option is deprecated. Use the "output.manualChunks" option instead.',
-			URL_OUTPUT_MANUALCHUNKS,
-			true,
-			warn,
-			strictDeprecations
-		);
+const getJsx = (config: InputOptions): NormalizedInputOptions['jsx'] => {
+	const configJsx = config.jsx;
+	if (!configJsx) return false;
+	const configWithPreset = getOptionWithPreset(configJsx, jsxPresets, 'jsx', URL_JSX, 'false, ');
+	const { factory, importSource, mode } = configWithPreset;
+	switch (mode) {
+		case 'automatic': {
+			return {
+				factory: factory || 'React.createElement',
+				importSource: importSource || 'react',
+				jsxImportSource: configWithPreset.jsxImportSource || 'react/jsx-runtime',
+				mode: 'automatic'
+			};
+		}
+		case 'preserve': {
+			if (importSource && !(factory || configWithPreset.fragment)) {
+				error(
+					logInvalidOption(
+						'jsx',
+						URL_JSX,
+						'when preserving JSX and specifying an importSource, you also need to specify a factory or fragment'
+					)
+				);
+			}
+			return {
+				factory: factory || null,
+				fragment: configWithPreset.fragment || null,
+				importSource: importSource || null,
+				mode: 'preserve'
+			};
+		}
+		// case 'classic':
+		default: {
+			if (mode && mode !== 'classic') {
+				error(
+					logInvalidOption(
+						'jsx.mode',
+						URL_JSX,
+						'mode must be "automatic", "classic" or "preserve"',
+						mode
+					)
+				);
+			}
+			return {
+				factory: factory || 'React.createElement',
+				fragment: configWithPreset.fragment || 'React.Fragment',
+				importSource: importSource || null,
+				mode: 'classic'
+			};
+		}
 	}
-	return configManualChunks;
 };
 
-const getmaxParallelFileOps = (
-	config: InputOptions,
-	warn: WarningHandler,
-	strictDeprecations: boolean
+const getMaxParallelFileOps = (
+	config: InputOptions
 ): NormalizedInputOptions['maxParallelFileOps'] => {
-	const maxParallelFileReads = config.maxParallelFileReads;
-	if (typeof maxParallelFileReads === 'number') {
-		warnDeprecationWithOptions(
-			'The "maxParallelFileReads" option is deprecated. Use the "maxParallelFileOps" option instead.',
-			URL_MAXPARALLELFILEOPS,
-			true,
-			warn,
-			strictDeprecations
-		);
-	}
-	const maxParallelFileOps = config.maxParallelFileOps ?? maxParallelFileReads;
+	const maxParallelFileOps = config.maxParallelFileOps;
 	if (typeof maxParallelFileOps === 'number') {
 		if (maxParallelFileOps <= 0) return Infinity;
 		return maxParallelFileOps;
@@ -225,33 +189,13 @@ const getModuleContext = (
 		return id => configModuleContext(id) ?? context;
 	}
 	if (configModuleContext) {
-		const contextByModuleId: {
-			[key: string]: string;
-		} = Object.create(null);
+		const contextByModuleId: Record<string, string> = Object.create(null);
 		for (const [key, moduleContext] of Object.entries(configModuleContext)) {
 			contextByModuleId[resolve(key)] = moduleContext;
 		}
 		return id => contextByModuleId[id] ?? context;
 	}
 	return () => context;
-};
-
-const getPreserveModules = (
-	config: InputOptions,
-	warn: WarningHandler,
-	strictDeprecations: boolean
-): NormalizedInputOptions['preserveModules'] => {
-	const configPreserveModules = config.preserveModules;
-	if (configPreserveModules) {
-		warnDeprecationWithOptions(
-			'The "preserveModules" option is deprecated. Use the "output.preserveModules" option instead.',
-			URL_OUTPUT_PRESERVEMODULES,
-			true,
-			warn,
-			strictDeprecations
-		);
-	}
-	return configPreserveModules;
 };
 
 const getTreeshake = (config: InputOptions): NormalizedInputOptions['treeshake'] => {
@@ -302,7 +246,7 @@ const getHasModuleSideEffects = (
 	}
 	if (moduleSideEffectsOption) {
 		error(
-			errorInvalidOption(
+			logInvalidOption(
 				'treeshake.moduleSideEffects',
 				URL_TREESHAKE_MODULESIDEEFFECTS,
 				'please use one of false, "no-external", a function or an array'

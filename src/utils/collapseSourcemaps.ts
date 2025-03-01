@@ -3,18 +3,20 @@ import type Module from '../Module';
 import type {
 	DecodedSourceMapOrMissing,
 	ExistingDecodedSourceMap,
-	SourceMapSegment,
-	WarningHandler
+	LogHandler,
+	SourceMapSegment
 } from '../rollup/types';
-import { error, errorConflictingSourcemapSources, errorSourcemapBroken } from './error';
+import { decodedSourcemap, resetSourcemapCache } from './decodedSourcemap';
+import { LOGLEVEL_WARN } from './logging';
+import { error, logConflictingSourcemapSources, logSourcemapBroken } from './logs';
 import { basename, dirname, relative, resolve } from './path';
 
 class Source {
-	readonly content: string | null;
+	readonly content: string;
 	readonly filename: string;
 	isOriginal = true;
 
-	constructor(filename: string, content: string | null) {
+	constructor(filename: string, content: string) {
 		this.filename = filename;
 		this.content = content;
 	}
@@ -48,7 +50,7 @@ class Link {
 	traceMappings() {
 		const sources: string[] = [];
 		const sourceIndexMap = new Map<string, number>();
-		const sourcesContent: (string | null)[] = [];
+		const sourcesContent: string[] = [];
 		const names: string[] = [];
 		const nameIndexMap = new Map<string, number>();
 
@@ -84,7 +86,7 @@ class Link {
 					} else if (sourcesContent[sourceIndex] == null) {
 						sourcesContent[sourceIndex] = content;
 					} else if (content != null && sourcesContent[sourceIndex] !== content) {
-						return error(errorConflictingSourcemapSources(filename));
+						return error(logConflictingSourcemapSources(filename));
 					}
 
 					const tracedSegment: SourceMapSegment = [segment[0], sourceIndex, line, column];
@@ -147,13 +149,13 @@ class Link {
 	}
 }
 
-function getLinkMap(warn: WarningHandler) {
+function getLinkMap(log: LogHandler) {
 	return function linkMap(source: Source | Link, map: DecodedSourceMapOrMissing): Link {
-		if (map.mappings) {
+		if (!map.missing) {
 			return new Link(map, [source]);
 		}
 
-		warn(errorSourcemapBroken(map.plugin));
+		log(LOGLEVEL_WARN, logSourcemapBroken(map.plugin));
 
 		return new Link(
 			{
@@ -192,13 +194,13 @@ function getCollapsedSourcemap(
 
 export function collapseSourcemaps(
 	file: string,
-	map: DecodedSourceMap,
+	map: Omit<DecodedSourceMap, 'sourcesContent'> & { sourcesContent: (string | null)[] },
 	modules: readonly Module[],
 	bundleSourcemapChain: readonly DecodedSourceMapOrMissing[],
 	excludeContent: boolean | undefined,
-	warn: WarningHandler
+	log: LogHandler
 ): SourceMap {
-	const linkMap = getLinkMap(warn);
+	const linkMap = getLinkMap(log);
 	const moduleSources = modules
 		.filter(module => !module.excludeFromSourcemap)
 		.map(module =>
@@ -223,6 +225,10 @@ export function collapseSourcemaps(
 
 	sourcesContent = (excludeContent ? null : sourcesContent) as string[];
 
+	for (const module of modules) {
+		resetSourcemapCache(module.originalSourcemap, module.sourcemapChain);
+	}
+
 	return new SourceMap({ file, mappings, names, sources, sourcesContent });
 }
 
@@ -231,7 +237,7 @@ export function collapseSourcemap(
 	originalCode: string,
 	originalSourcemap: ExistingDecodedSourceMap | null,
 	sourcemapChain: readonly DecodedSourceMapOrMissing[],
-	warn: WarningHandler
+	log: LogHandler
 ): ExistingDecodedSourceMap | null {
 	if (sourcemapChain.length === 0) {
 		return originalSourcemap;
@@ -242,8 +248,8 @@ export function collapseSourcemap(
 		originalCode,
 		originalSourcemap,
 		sourcemapChain,
-		getLinkMap(warn)
+		getLinkMap(log)
 	) as Link;
 	const map = source.traceMappings();
-	return { version: 3, ...map };
+	return decodedSourcemap({ version: 3, ...map });
 }

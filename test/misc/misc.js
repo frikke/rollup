@@ -1,6 +1,6 @@
 const assert = require('node:assert');
 const rollup = require('../../dist/rollup');
-const { loader } = require('../utils.js');
+const { loader } = require('../testHelpers.js');
 
 describe('misc', () => {
 	it('avoids modification of options or their properties', () => {
@@ -16,8 +16,6 @@ describe('misc', () => {
 						load: freeze(() => `export default 0;`)
 					}
 				]),
-				acornInjectPlugins: freeze([]),
-				acorn: freeze({}),
 				treeshake: freeze({})
 			})
 		);
@@ -111,9 +109,67 @@ describe('misc', () => {
 				assert.equal(warnings.length, 0);
 				assert.deepEqual(
 					output.map(({ fileName }) => fileName),
-					['main1.js', 'main2.js', 'dep-9394ae8f.js', 'dyndep-d5d54b59.js']
+					['main1.js', 'main2.js', 'dep-BED4JKkQ.js', 'dyndep-DOckMt73.js']
 				);
 			});
+	});
+
+	it('applies consistent hashes regardless of chunk transform order', async () => {
+		const FILES = {
+			main: `
+            import('folder1/dupe').then(({dupe}) => console.log(dupe));
+            import('folder2/dupe').then(({dupe}) => console.log(dupe));
+        `,
+			'folder1/dupe': `export const dupe = 'dupe content';`,
+			'folder2/dupe': `export const dupe = 'dupe content';`
+		};
+
+		async function buildBundle(delayedChunk) {
+			const bundle = await rollup.rollup({
+				input: 'main',
+				plugins: [
+					loader(FILES),
+					{
+						name: 'delay-chunk',
+						async renderChunk(_, chunk) {
+							if (chunk.facadeModuleId === delayedChunk) {
+								await new Promise(resolve => setTimeout(resolve, 100));
+							}
+							return null;
+						}
+					}
+				]
+			});
+			return bundle.generate({
+				format: 'es',
+				chunkFileNames: '[name]-[hash].js'
+			});
+		}
+
+		const { output: output1 } = await buildBundle('folder1/dupe');
+		const { output: output2 } = await buildBundle('folder2/dupe');
+
+		assert.strictEqual(
+			output1.length,
+			output2.length,
+			'Both outputs should have the same number of chunks'
+		);
+
+		const sortedOutput1 = output1.sort((a, b) => a.fileName.localeCompare(b.fileName));
+		const sortedOutput2 = output2.sort((a, b) => a.fileName.localeCompare(b.fileName));
+
+		for (let index = 0; index < sortedOutput1.length; index++) {
+			assert.strictEqual(
+				sortedOutput1[index].fileName,
+				sortedOutput2[index].fileName,
+				`Chunk ${index} should have the same filename in both outputs`
+			);
+			assert.strictEqual(
+				sortedOutput1[index].code,
+				sortedOutput2[index].code,
+				`Chunk ${index} should have the same code in both outputs`
+			);
+		}
 	});
 
 	it('ignores falsy plugins', () =>
@@ -249,32 +305,6 @@ console.log(x);
 		assert.ok(subsubfeature.code.startsWith("import { fn } from '../../../main'"));
 	});
 
-	it('throws the proper error on max call stack exception', async () => {
-		const count = 10_000;
-		let source = '';
-		for (let index = 0; index < count; index++) {
-			source += `if (foo) {`;
-		}
-		for (let index = 0; index < count; index++) {
-			source += '}';
-		}
-		try {
-			await rollup.rollup({
-				input: {
-					input: 'input'
-				},
-				plugins: [
-					loader({
-						input: source
-					})
-				]
-			});
-		} catch (error) {
-			assert.notDeepStrictEqual(error.message, 'Maximum call stack size exceeded');
-			assert.strictEqual(error.name, 'RollupError');
-		}
-	});
-
 	it('supports rendering es after rendering iife with inlined dynamic imports', async () => {
 		const bundle = await rollup.rollup({
 			input: 'main.js',
@@ -287,5 +317,19 @@ console.log(x);
 		});
 		await bundle.generate({ format: 'iife', inlineDynamicImports: true });
 		await bundle.generate({ format: 'es', exports: 'auto' });
+	});
+
+	it('should support `Symbol.asyncDispose` of the rollup bundle and set closed state to true', async () => {
+		const bundle = await rollup.rollup({
+			input: 'main.js',
+			plugins: [
+				loader({
+					'main.js': "console.log('hello')"
+				})
+			]
+		});
+
+		await bundle[Symbol.asyncDispose]();
+		assert.strictEqual(bundle.closed, true);
 	});
 });

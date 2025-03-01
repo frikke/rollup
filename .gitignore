@@ -3,6 +3,7 @@
 .gobble*
 cache
 dist
+dist-build
 _actual
 _actual.js
 coverage
@@ -17,5 +18,10 @@ perf/
 .nyc_output/
 .github_token
 .temp
-docs/.vitepress/graphs
+docs/.vitepress/graphs/*.mmd
 *.tsbuildinfo
+target
+*.node
+/wasm/*
+!/wasm/*.d.ts
+/wasm-node/

@@ -3,16 +3,23 @@
 import { doNothing } from '../../../utils/doNothing';
 import type { HasEffectsContext } from '../../ExecutionContext';
 import type { NodeInteractionCalled } from '../../NodeInteractions';
-import { NODE_INTERACTION_UNKNOWN_ASSIGNMENT } from '../../NodeInteractions';
+import {
+	INTERACTION_CALLED,
+	NODE_INTERACTION_UNKNOWN_ACCESS,
+	NODE_INTERACTION_UNKNOWN_ASSIGNMENT
+} from '../../NodeInteractions';
+import { isObjectExpressionNode, isPropertyNode } from '../../utils/identifyNode';
 import type { ObjectPath } from '../../utils/PathTracker';
 import {
+	EMPTY_PATH,
+	SHARED_RECURSION_TRACKER,
 	SymbolToStringTag,
 	UNKNOWN_NON_ACCESSOR_PATH,
 	UNKNOWN_PATH
 } from '../../utils/PathTracker';
 import ArrayExpression from '../ArrayExpression';
 import type { LiteralValueOrUnknown } from './Expression';
-import { UnknownTruthyValue } from './Expression';
+import { ExpressionEntity, UnknownValue } from './Expression';
 
 const ValueProperties = Symbol('Value Properties');
 
@@ -28,27 +35,43 @@ interface GlobalDescription {
 	__proto__: null;
 }
 
-const getTruthyLiteralValue = (): LiteralValueOrUnknown => UnknownTruthyValue;
+const getUnknownValue = (): LiteralValueOrUnknown => UnknownValue;
 const returnFalse = () => false;
 const returnTrue = () => true;
 
 const PURE: ValueDescription = {
 	deoptimizeArgumentsOnCall: doNothing,
-	getLiteralValue: getTruthyLiteralValue,
+	getLiteralValue: getUnknownValue,
 	hasEffectsWhenCalled: returnFalse
 };
 
 const IMPURE: ValueDescription = {
 	deoptimizeArgumentsOnCall: doNothing,
-	getLiteralValue: getTruthyLiteralValue,
+	getLiteralValue: getUnknownValue,
 	hasEffectsWhenCalled: returnTrue
 };
 
 const PURE_WITH_ARRAY: ValueDescription = {
 	deoptimizeArgumentsOnCall: doNothing,
-	getLiteralValue: getTruthyLiteralValue,
+	getLiteralValue: getUnknownValue,
 	hasEffectsWhenCalled({ args }) {
 		return args.length > 1 && !(args[1] instanceof ArrayExpression);
+	}
+};
+
+const GETTER_ACCESS: ValueDescription = {
+	deoptimizeArgumentsOnCall: doNothing,
+	getLiteralValue: getUnknownValue,
+	hasEffectsWhenCalled({ args }, context) {
+		const [_thisArgument, firstArgument] = args;
+		return (
+			!(firstArgument instanceof ExpressionEntity) ||
+			firstArgument.hasEffectsOnInteractionAtPath(
+				UNKNOWN_PATH,
+				NODE_INTERACTION_UNKNOWN_ACCESS,
+				context
+			)
+		);
 	}
 };
 
@@ -65,6 +88,12 @@ const PF: GlobalDescription = {
 	[ValueProperties]: PURE
 };
 
+/* PURE FUNCTION IF FIRST ARG DOES NOT CONTAIN A GETTER */
+const PF_NO_GETTER: GlobalDescription = {
+	__proto__: null,
+	[ValueProperties]: GETTER_ACCESS
+};
+
 /* FUNCTION THAT MUTATES FIRST ARG WITHOUT TRIGGERING ACCESSORS */
 const MUTATES_ARG_WITHOUT_ACCESSOR: GlobalDescription = {
 	__proto__: null,
@@ -72,7 +101,7 @@ const MUTATES_ARG_WITHOUT_ACCESSOR: GlobalDescription = {
 		deoptimizeArgumentsOnCall({ args: [, firstArgument] }: NodeInteractionCalled) {
 			firstArgument?.deoptimizePath(UNKNOWN_PATH);
 		},
-		getLiteralValue: getTruthyLiteralValue,
+		getLiteralValue: getUnknownValue,
 		hasEffectsWhenCalled({ args }, context) {
 			return (
 				args.length <= 1 ||
@@ -144,6 +173,7 @@ const knownGlobals: GlobalDescription = {
 		isView: PF,
 		prototype: O
 	},
+	AggregateError: PC_WITH_ARRAY,
 	Atomics: O,
 	BigInt: C,
 	BigInt64Array: C,
@@ -167,6 +197,7 @@ const knownGlobals: GlobalDescription = {
 	escape: PF,
 	eval: O,
 	EvalError: PC,
+	FinalizationRegistry: C,
 	Float32Array: ARRAY_TYPE,
 	Float64Array: ARRAY_TYPE,
 	Function: C,
@@ -253,7 +284,8 @@ const knownGlobals: GlobalDescription = {
 		isSealed: PF,
 		keys: PF,
 		fromEntries: O,
-		entries: PF,
+		entries: PF_NO_GETTER,
+		values: PF_NO_GETTER,
 		prototype: O
 	},
 	parseFloat: PF,
@@ -270,7 +302,33 @@ const knownGlobals: GlobalDescription = {
 		resolve: O
 	},
 	propertyIsEnumerable: O,
-	Proxy: O,
+	Proxy: {
+		__proto__: null,
+		[ValueProperties]: {
+			deoptimizeArgumentsOnCall: ({ args: [, target, parameter] }) => {
+				if (isObjectExpressionNode(parameter)) {
+					const hasSpreadElement = parameter.properties.some(property => !isPropertyNode(property));
+					if (!hasSpreadElement) {
+						for (const property of parameter.properties) {
+							property.deoptimizeArgumentsOnInteractionAtPath(
+								{
+									args: [null, target],
+									type: INTERACTION_CALLED,
+									withNew: false
+								},
+								EMPTY_PATH,
+								SHARED_RECURSION_TRACKER
+							);
+						}
+						return;
+					}
+				}
+				target.deoptimizePath(UNKNOWN_PATH);
+			},
+			getLiteralValue: getUnknownValue,
+			hasEffectsWhenCalled: returnTrue
+		}
+	},
 	RangeError: PC,
 	ReferenceError: PC,
 	Reflect: O,
@@ -316,6 +374,7 @@ const knownGlobals: GlobalDescription = {
 	URIError: PC,
 	valueOf: O,
 	WeakMap: PC_WITH_ARRAY,
+	WeakRef: C,
 	WeakSet: PC_WITH_ARRAY,
 
 	// Additional globals shared by Node and Browser that are not strictly part of the language
@@ -350,16 +409,24 @@ const knownGlobals: GlobalDescription = {
 		[ValueProperties]: IMPURE,
 		Collator: INTL_MEMBER,
 		DateTimeFormat: INTL_MEMBER,
+		DisplayNames: INTL_MEMBER,
 		ListFormat: INTL_MEMBER,
+		Locale: INTL_MEMBER,
 		NumberFormat: INTL_MEMBER,
 		PluralRules: INTL_MEMBER,
-		RelativeTimeFormat: INTL_MEMBER
+		RelativeTimeFormat: INTL_MEMBER,
+		Segmenter: INTL_MEMBER
 	},
 	setInterval: C,
 	setTimeout: C,
 	TextDecoder: C,
 	TextEncoder: C,
-	URL: C,
+	URL: {
+		__proto__: null,
+		[ValueProperties]: IMPURE,
+		prototype: O,
+		canParse: PF
+	},
 	URLSearchParams: C,
 
 	// Browser specific globals
@@ -444,7 +511,17 @@ const knownGlobals: GlobalDescription = {
 	CSSSupportsRule: C,
 	CustomElementRegistry: C,
 	customElements: O,
-	CustomEvent: C,
+	CustomEvent: {
+		__proto__: null,
+		[ValueProperties]: {
+			deoptimizeArgumentsOnCall({ args }: NodeInteractionCalled) {
+				args[2]?.deoptimizePath(['detail']);
+			},
+			getLiteralValue: getUnknownValue,
+			hasEffectsWhenCalled: returnFalse
+		},
+		prototype: O
+	},
 	DataTransfer: C,
 	DataTransferItem: C,
 	DataTransferItemList: C,

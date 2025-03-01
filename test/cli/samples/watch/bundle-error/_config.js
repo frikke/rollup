@@ -1,6 +1,6 @@
 const { unlinkSync, writeFileSync } = require('node:fs');
 const path = require('node:path');
-const { atomicWriteFileSync } = require('../../../../utils');
+const { atomicWriteFileSync } = require('../../../../testHelpers');
 
 let mainFile;
 
@@ -16,7 +16,7 @@ module.exports = defineTest({
 		setTimeout(() => unlinkSync(mainFile), 300);
 	},
 	abortOnStderr(data) {
-		if (data.includes('[!] RollupError: Unexpected token')) {
+		if (data.includes('[!] RollupError: main.js (1:0): Expression expected')) {
 			setTimeout(() => atomicWriteFileSync(mainFile, 'export default 42;'), 500);
 			return false;
 		}

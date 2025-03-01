@@ -8,14 +8,14 @@ require('external2');
 
 var main = '1';
 
-Object.defineProperty(exports, 'e', {
+Object.defineProperty(exports, "e", {
 	enumerable: true,
 	get: function () { return external1.e; }
 });
 exports.dep = dep.dep;
 exports.main = main;
 Object.keys(starexternal1).forEach(function (k) {
-	if (k !== 'default' && !exports.hasOwnProperty(k)) Object.defineProperty(exports, k, {
+	if (k !== 'default' && !Object.prototype.hasOwnProperty.call(exports, k)) Object.defineProperty(exports, k, {
 		enumerable: true,
 		get: function () { return starexternal1[k]; }
 	});

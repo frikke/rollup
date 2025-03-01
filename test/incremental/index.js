@@ -1,10 +1,9 @@
 const assert = require('node:assert');
-const acorn = require('acorn');
 /**
  * @type {import('../../src/rollup/types')} Rollup
  */
 const rollup = require('../../dist/rollup');
-const { executeBundle, getObject } = require('../utils.js');
+const { executeBundle, getObject } = require('../testHelpers.js');
 
 describe('incremental', () => {
 	let resolveIdCalls;
@@ -155,7 +154,6 @@ describe('incremental', () => {
 		let cache;
 		modules.foo = `import p from 'external'; export default p;`;
 
-		// eslint-disable-next-line unicorn/consistent-function-scoping
 		const require = id => id === 'external' && 43;
 
 		return rollup
@@ -187,28 +185,6 @@ describe('incremental', () => {
 				assert.strictEqual(result, 43);
 			});
 	});
-
-	it('keeps ASTs between runs', () =>
-		rollup
-			.rollup({
-				input: 'entry',
-				plugins: [plugin]
-			})
-			.then(bundle => {
-				const asts = {};
-				for (const module of bundle.cache.modules) {
-					asts[module.id] = module.ast;
-				}
-
-				assert.deepEqual(
-					asts.entry,
-					acorn.parse(modules.entry, { sourceType: 'module', ecmaVersion: 2020 })
-				);
-				assert.deepEqual(
-					asts.foo,
-					acorn.parse(modules.foo, { sourceType: 'module', ecmaVersion: 2020 })
-				);
-			}));
 
 	it('recovers from errors', () => {
 		modules.entry = `import foo from 'foo'; import bar from 'bar'; export default foo + bar;`;
@@ -264,7 +240,7 @@ describe('incremental', () => {
 				assert.deepEqual(bundle.cache.modules[1].resolvedIds, {
 					foo: {
 						id: 'foo',
-						assertions: {},
+						attributes: {},
 						external: false,
 						meta: {},
 						moduleSideEffects: true,
@@ -273,7 +249,7 @@ describe('incremental', () => {
 					},
 					external: {
 						id: 'external',
-						assertions: {},
+						attributes: {},
 						external: true,
 						meta: {},
 						moduleSideEffects: true,
@@ -361,7 +337,7 @@ describe('incremental', () => {
 						assert.deepStrictEqual(resolvedSources, {
 							__proto__: null,
 							bar: {
-								assertions: {},
+								attributes: {},
 								external: false,
 								id: 'bar',
 								meta: {},
@@ -383,7 +359,7 @@ describe('incremental', () => {
 						assert.deepStrictEqual(resolvedSources, {
 							__proto__: null,
 							foo: {
-								assertions: {},
+								attributes: {},
 								external: false,
 								id: 'foo',
 								meta: {},

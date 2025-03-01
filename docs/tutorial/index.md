@@ -94,10 +94,13 @@ So far, so good, but as we start adding more options it becomes a bit of a nuisa
 
 To save repeating ourselves, we can create a config file containing all the options we need. A config file is written in JavaScript and is more flexible than the raw CLI.
 
-Create a file in the project root called `rollup.config.js`, and add the following code:
+Create a file in the project root called `rollup.config.mjs`, and add the following code:
 
-```js
-// rollup.config.js
+```js twoslash
+// rollup.config.mjs
+// ---cut-start---
+/** @type {import('rollup').RollupOptions} */
+// ---cut-end---
 export default {
 	input: 'src/main.js',
 	output: {
@@ -124,11 +127,11 @@ rollup -c -o bundle-2.js # `-o` is equivalent to `--file` (formerly "output")
 
 _Note: Rollup itself processes the config file, which is why we're able to use `export default` syntax – the code isn't being transpiled with Babel or anything similar, so you can only use ES2015 features that are supported in the version of Node.js that you're running._
 
-You can, if you like, specify a different config file from the default `rollup.config.js`:
+You can, if you like, specify a different config file from the default `rollup.config.mjs`:
 
 ```shell
-rollup --config rollup.config.dev.js
-rollup --config rollup.config.prod.js
+rollup --config rollup.config.dev.mjs
+rollup --config rollup.config.prod.mjs
 ```
 
 ## Installing Rollup locally
@@ -210,12 +213,15 @@ export default function () {
 }
 ```
 
-Edit your `rollup.config.js` file to include the JSON plugin:
+Edit your `rollup.config.mjs` file to include the JSON plugin:
 
-```js
-// rollup.config.js
+```js twoslash
+// rollup.config.mjs
 import json from '@rollup/plugin-json';
 
+// ---cut-start---
+/** @type {import('rollup').RollupOptions} */
+// ---cut-end---
 export default {
 	input: 'src/main.js',
 	output: {
@@ -252,13 +258,16 @@ Let us extend the previous example to provide a minified build together with the
 npm install --save-dev @rollup/plugin-terser
 ```
 
-Edit your `rollup.config.js` file to add a second minified output. As format, we choose `iife`. This format wraps the code so that it can be consumed via a `script` tag in the browser while avoiding unwanted interactions with other code. As we have an export, we need to provide the name of a global variable that will be created by our bundle so that other code can access our export via this variable.
+Edit your `rollup.config.mjs` file to add a second minified output. As format, we choose `iife`. This format wraps the code so that it can be consumed via a `script` tag in the browser while avoiding unwanted interactions with other code. As we have an export, we need to provide the name of a global variable that will be created by our bundle so that other code can access our export via this variable.
 
-```js
-// rollup.config.js
+```js twoslash
+// rollup.config.mjs
 import json from '@rollup/plugin-json';
 import terser from '@rollup/plugin-terser';
 
+// ---cut-start---
+/** @type {import('rollup').RollupOptions} */
+// ---cut-end---
 export default {
 	input: 'src/main.js',
 	output: [
@@ -400,7 +409,7 @@ rollup src/main.js src/main2.js -f es -d dist
 ```
 
 ```html
-<!DOCTYPE html>
+<!doctype html>
 <script type="module">
 	import main2 from './dist/main2.js';
 	main2();
@@ -422,7 +431,7 @@ npm install --save-dev systemjs
 And then load either or both entry points in an HTML page as needed:
 
 ```html
-<!DOCTYPE html>
+<!doctype html>
 <script src="node_modules/systemjs/dist/s.min.js"></script>
 <script>
 	System.import('./dist/main2.js').then(({ default: main }) => main());

@@ -1,17 +1,17 @@
 import { unlink, writeFile } from 'node:fs/promises';
-import { dirname, isAbsolute, join } from 'node:path';
+import path from 'node:path';
 import process from 'node:process';
 import { pathToFileURL } from 'node:url';
 import * as rollup from '../../src/node-entry';
-import type { MergedRollupOptions } from '../../src/rollup/types';
+import type { ImportAttributesKey, MergedRollupOptions } from '../../src/rollup/types';
 import { bold } from '../../src/utils/colors';
 import {
 	error,
-	errorCannotBundleConfigAsEsm,
-	errorCannotLoadConfigAsCjs,
-	errorCannotLoadConfigAsEsm,
-	errorMissingConfig
-} from '../../src/utils/error';
+	logCannotBundleConfigAsEsm,
+	logCannotLoadConfigAsCjs,
+	logCannotLoadConfigAsEsm,
+	logMissingConfig
+} from '../../src/utils/logs';
 import { mergeOptions } from '../../src/utils/options/mergeOptions';
 import type { GenericConfigObject } from '../../src/utils/options/options';
 import relativeId from '../../src/utils/relativeId';
@@ -20,16 +20,20 @@ import batchWarnings from './batchWarnings';
 import { addCommandPluginsToInputOptions, addPluginsFromCommandOption } from './commandPlugins';
 import type { LoadConfigFile } from './loadConfigFileType';
 
-export const loadConfigFile: LoadConfigFile = async (fileName, commandOptions = {}) => {
+export const loadConfigFile: LoadConfigFile = async (
+	fileName,
+	commandOptions = {},
+	watchMode = false
+) => {
 	const configs = await getConfigList(
-		getDefaultFromCjs(await getConfigFileExport(fileName, commandOptions)),
+		getDefaultFromCjs(await getConfigFileExport(fileName, commandOptions, watchMode)),
 		commandOptions
 	);
-	const warnings = batchWarnings();
+	const warnings = batchWarnings(commandOptions);
 	try {
 		const normalizedConfigs: MergedRollupOptions[] = [];
 		for (const config of configs) {
-			const options = await mergeOptions(config, commandOptions, warnings.add);
+			const options = await mergeOptions(config, watchMode, commandOptions, warnings.log);
 			await addCommandPluginsToInputOptions(options, commandOptions);
 			normalizedConfigs.push(options);
 		}
@@ -40,13 +44,17 @@ export const loadConfigFile: LoadConfigFile = async (fileName, commandOptions = 
 	}
 };
 
-async function getConfigFileExport(fileName: string, commandOptions: Record<string, unknown>) {
+async function getConfigFileExport(
+	fileName: string,
+	commandOptions: Record<string, unknown>,
+	watchMode: boolean
+) {
 	if (commandOptions.configPlugin || commandOptions.bundleConfigAsCjs) {
 		try {
 			return await loadTranspiledConfigFile(fileName, commandOptions);
 		} catch (error_: any) {
 			if (error_.message.includes('not defined in ES module scope')) {
-				return error(errorCannotBundleConfigAsEsm(error_));
+				return error(logCannotBundleConfigAsEsm(error_));
 			}
 			throw error_;
 		}
@@ -60,17 +68,17 @@ async function getConfigFileExport(fileName: string, commandOptions: Record<stri
 	process.on('warning', handleWarning);
 	try {
 		const fileUrl = pathToFileURL(fileName);
-		if (process.env.ROLLUP_WATCH) {
+		if (watchMode) {
 			// We are adding the current date to allow reloads in watch mode
 			fileUrl.search = `?${Date.now()}`;
 		}
 		return (await import(fileUrl.href)).default;
 	} catch (error_: any) {
 		if (cannotLoadEsm) {
-			return error(errorCannotLoadConfigAsCjs(error_));
+			return error(logCannotLoadConfigAsCjs(error_));
 		}
 		if (error_.message.includes('not defined in ES module scope')) {
-			return error(errorCannotLoadConfigAsEsm(error_));
+			return error(logCannotLoadConfigAsEsm(error_));
 		}
 		throw error_;
 	} finally {
@@ -82,14 +90,19 @@ function getDefaultFromCjs(namespace: GenericConfigObject): unknown {
 	return namespace.default || namespace;
 }
 
+function getConfigImportAttributesKey(input: unknown): ImportAttributesKey | undefined {
+	if (input === 'assert' || input === 'with') return input;
+	return;
+}
+
 async function loadTranspiledConfigFile(
 	fileName: string,
-	{ bundleConfigAsCjs, configPlugin, silent }: Record<string, unknown>
+	commandOptions: Record<string, unknown>
 ): Promise<unknown> {
-	const warnings = batchWarnings();
+	const { bundleConfigAsCjs, configPlugin, configImportAttributesKey, silent } = commandOptions;
+	const warnings = batchWarnings(commandOptions);
 	const inputOptions = {
-		external: (id: string) =>
-			(id[0] !== '.' && !isAbsolute(id)) || id.slice(-5, id.length) === '.json',
+		external: (id: string) => (id[0] !== '.' && !path.isAbsolute(id)) || id.slice(-5) === '.json',
 		input: fileName,
 		onwarn: warnings.add,
 		plugins: [],
@@ -97,15 +110,12 @@ async function loadTranspiledConfigFile(
 	};
 	await addPluginsFromCommandOption(configPlugin, inputOptions);
 	const bundle = await rollup.rollup(inputOptions);
-	if (!silent && warnings.count > 0) {
-		stderr(bold(`loaded ${relativeId(fileName)} with warnings`));
-		warnings.flush();
-	}
 	const {
 		output: [{ code }]
 	} = await bundle.generate({
 		exports: 'named',
 		format: bundleConfigAsCjs ? 'cjs' : 'es',
+		importAttributesKey: getConfigImportAttributesKey(configImportAttributesKey),
 		plugins: [
 			{
 				name: 'transpile-import-meta',
@@ -113,15 +123,28 @@ async function loadTranspiledConfigFile(
 					if (property === 'url') {
 						return `'${pathToFileURL(moduleId).href}'`;
 					}
+					if (property == 'filename') {
+						return `'${moduleId}'`;
+					}
+					if (property == 'dirname') {
+						return `'${path.dirname(moduleId)}'`;
+					}
 					if (property == null) {
-						return `{url:'${pathToFileURL(moduleId).href}'}`;
+						return `{url:'${pathToFileURL(moduleId).href}', filename: '${moduleId}', dirname: '${path.dirname(moduleId)}'}`;
 					}
 				}
 			}
 		]
 	});
+	if (!silent && warnings.count > 0) {
+		stderr(bold(`loaded ${relativeId(fileName)} with warnings`));
+		warnings.flush();
+	}
 	return loadConfigFromWrittenFile(
-		join(dirname(fileName), `rollup.config-${Date.now()}.${bundleConfigAsCjs ? 'cjs' : 'mjs'}`),
+		path.join(
+			path.dirname(fileName),
+			`rollup.config-${Date.now()}.${bundleConfigAsCjs ? 'cjs' : 'mjs'}`
+		),
 		code
 	);
 }
@@ -134,8 +157,7 @@ async function loadConfigFromWrittenFile(
 	try {
 		return (await import(pathToFileURL(bundledFileName).href)).default;
 	} finally {
-		// Not awaiting here saves some ms while potentially hiding a non-critical error
-		unlink(bundledFileName);
+		unlink(bundledFileName).catch(error => console.warn(error?.message || error));
 	}
 }
 
@@ -144,7 +166,7 @@ async function getConfigList(configFileExport: any, commandOptions: any): Promis
 		? configFileExport(commandOptions)
 		: configFileExport);
 	if (Object.keys(config).length === 0) {
-		return error(errorMissingConfig());
+		return error(logMissingConfig());
 	}
 	return Array.isArray(config) ? config : [config];
 }

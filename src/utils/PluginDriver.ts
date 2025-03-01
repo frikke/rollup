@@ -20,14 +20,15 @@ import type {
 } from '../rollup/types';
 import { FileEmitter } from './FileEmitter';
 import { getPluginContext } from './PluginContext';
+import { getOrCreate } from './getOrCreate';
+import { LOGLEVEL_WARN } from './logging';
 import {
 	error,
-	errorInputHookInOutputPlugin,
-	errorInvalidAddonPluginHook,
-	errorInvalidFunctionPluginHook,
-	errorPluginError
-} from './error';
-import { getOrCreate } from './getOrCreate';
+	logInputHookInOutputPlugin,
+	logInvalidAddonPluginHook,
+	logInvalidFunctionPluginHook,
+	logPluginError
+} from './logs';
 import type { OutputBundleWithPlaceholders } from './outputBundle';
 
 /**
@@ -42,15 +43,14 @@ type EnsurePromise<T> = Promise<Awaited<T>>;
 type Argument0<H extends keyof FunctionPluginHooks> = Parameters<FunctionPluginHooks[H]>[0];
 
 // This will make sure no input hook is omitted
-const inputHookNames: {
-	[P in InputPluginHooks]: 1;
-} = {
+const inputHookNames: Record<InputPluginHooks, 1> = {
 	buildEnd: 1,
 	buildStart: 1,
 	closeBundle: 1,
 	closeWatcher: 1,
 	load: 1,
 	moduleParsed: 1,
+	onLog: 1,
 	options: 1,
 	resolveDynamicImport: 1,
 	resolveId: 1,
@@ -111,7 +111,7 @@ export class PluginDriver {
 			for (const plugin of userPlugins) {
 				for (const hook of inputHooks) {
 					if (hook in plugin) {
-						options.onwarn(errorInputHookInOutputPlugin(plugin.name, hook));
+						options.onLog(LOGLEVEL_WARN, logInputHookInOutputPlugin(plugin.name, hook));
 					}
 				}
 			}
@@ -291,7 +291,8 @@ export class PluginDriver {
 
 	/**
 	 * Run an async plugin hook and return the result.
-	 * @param hookName Name of the plugin hook. Must be either in `PluginHooks` or `OutputPluginValueHooks`.
+	 * @param hookName Name of the plugin hook. Must be either in `PluginHooks`
+	 *   or `OutputPluginValueHooks`.
 	 * @param args Arguments passed to the plugin hook.
 	 * @param plugin The actual pluginObject to run.
 	 * @param replaceContext When passed, the plugin context can be overridden.
@@ -329,7 +330,7 @@ export class PluginDriver {
 				if (typeof handler !== 'function') {
 					return handler;
 				}
-				// eslint-disable-next-line @typescript-eslint/ban-types
+				// eslint-disable-next-line @typescript-eslint/no-unsafe-function-type
 				const hookResult = (handler as Function).apply(context, parameters);
 
 				if (!hookResult?.then) {
@@ -359,7 +360,7 @@ export class PluginDriver {
 					// action considered to be fulfilled since error being handled
 					this.unfulfilledActions.delete(action);
 				}
-				return error(errorPluginError(error_, plugin.name, { hook: hookName }));
+				return error(logPluginError(error_, plugin.name, { hook: hookName }));
 			});
 	}
 
@@ -385,10 +386,10 @@ export class PluginDriver {
 		}
 
 		try {
-			// eslint-disable-next-line @typescript-eslint/ban-types
+			// eslint-disable-next-line @typescript-eslint/no-unsafe-function-type
 			return (handler as Function).apply(context, parameters);
 		} catch (error_: any) {
-			return error(errorPluginError(error_, plugin.name, { hook: hookName }));
+			return error(logPluginError(error_, plugin.name, { hook: hookName }));
 		}
 	}
 }
@@ -425,13 +426,13 @@ export function getSortedValidatedPlugins(
 
 function validateFunctionPluginHandler(handler: unknown, hookName: string, plugin: Plugin) {
 	if (typeof handler !== 'function') {
-		error(errorInvalidFunctionPluginHook(hookName, plugin.name));
+		error(logInvalidFunctionPluginHook(hookName, plugin.name));
 	}
 }
 
 function validateAddonPluginHandler(handler: unknown, hookName: string, plugin: Plugin) {
 	if (typeof handler !== 'string' && typeof handler !== 'function') {
-		return error(errorInvalidAddonPluginHook(hookName, plugin.name));
+		return error(logInvalidAddonPluginHook(hookName, plugin.name));
 	}
 }
 

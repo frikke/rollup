@@ -4,12 +4,14 @@ const ID_MAIN = path.join(__dirname, 'main.js');
 module.exports = defineTest({
 	description: 'handles when a sourcemap cannot be resolved in a warning',
 	options: {
-		plugins: {
-			name: 'test-plugin',
-			transform() {
-				return { code: 'export default this', map: { mappings: '' } };
+		plugins: [
+			{
+				name: 'test-plugin',
+				transform() {
+					return { code: 'export default this', map: { mappings: '' } };
+				}
 			}
-		}
+		]
 	},
 	warnings: [
 		{
@@ -24,7 +26,7 @@ module.exports = defineTest({
 				line: 1
 			},
 			message:
-				"Error when using sourcemap for reporting an error: Can't resolve original location of error.",
+				"main.js (1:15): Error when using sourcemap for reporting an error: Can't resolve original location of error.",
 			pos: 15
 		},
 		{
@@ -40,7 +42,7 @@ module.exports = defineTest({
 				line: 1
 			},
 			message:
-				"The 'this' keyword is equivalent to 'undefined' at the top level of an ES module, and has been rewritten",
+				"main.js (1:15): The 'this' keyword is equivalent to 'undefined' at the top level of an ES module, and has been rewritten",
 			pos: 15,
 			url: 'https://rollupjs.org/troubleshooting/#error-this-is-undefined'
 		}

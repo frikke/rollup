@@ -2,9 +2,9 @@ import type { Bundle as MagicStringBundle } from 'magic-string';
 import type { ChunkDependency } from '../Chunk';
 import type { NormalizedOutputOptions } from '../rollup/types';
 import type { GenerateCodeSnippets } from '../utils/generateCodeSnippets';
+import type { FinaliserOptions } from './index';
 import { getExportBlock, getNamespaceMarkers } from './shared/getExportBlock';
 import getInteropBlock from './shared/getInteropBlock';
-import type { FinaliserOptions } from './index';
 
 export default function cjs(
 	magicString: MagicStringBundle,
@@ -28,7 +28,8 @@ export default function cjs(
 		externalLiveBindings,
 		freeze,
 		interop,
-		namespaceToStringTag,
+		generatedCode: { symbols },
+		reexportProtoFromExternal,
 		strict
 	}: NormalizedOutputOptions
 ): void {
@@ -38,7 +39,7 @@ export default function cjs(
 	let namespaceMarkers = getNamespaceMarkers(
 		namedExportsMode && hasExports,
 		isEntryFacade && (esModule === true || (esModule === 'if-default-prop' && hasDefaultExport)),
-		isModuleFacade && namespaceToStringTag,
+		isModuleFacade && symbols,
 		snippets
 	);
 	if (namespaceMarkers) {
@@ -50,7 +51,7 @@ export default function cjs(
 		interop,
 		externalLiveBindings,
 		freeze,
-		namespaceToStringTag,
+		symbols,
 		accessedGlobals,
 		t,
 		snippets
@@ -66,6 +67,7 @@ export default function cjs(
 		snippets,
 		t,
 		externalLiveBindings,
+		reexportProtoFromExternal,
 		`module.exports${_}=${_}`
 	);
 

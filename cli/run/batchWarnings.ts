@@ -1,6 +1,10 @@
-import type { RollupWarning } from '../../src/rollup/types';
+import pc from 'picocolors';
+import type { RollupLog } from '../../src/rollup/types';
 import { bold, gray, yellow } from '../../src/utils/colors';
+import { ensureArray } from '../../src/utils/ensureArray';
+import { getLogFilter } from '../../src/utils/getLogFilter';
 import { getNewArray, getOrCreate } from '../../src/utils/getOrCreate';
+import { LOGLEVEL_DEBUG, LOGLEVEL_WARN } from '../../src/utils/logging';
 import { printQuotedStringList } from '../../src/utils/printStringList';
 import relativeId from '../../src/utils/relativeId';
 import { getRollupUrl } from '../../src/utils/url';
@@ -16,44 +20,37 @@ import {
 import { stderr } from '../logging';
 import type { BatchWarnings } from './loadConfigFileType';
 
-export default function batchWarnings(): BatchWarnings {
+export default function batchWarnings(command: Record<string, any>): BatchWarnings {
+	const silent = !!command.silent;
+	const logFilter = generateLogFilter(command);
 	let count = 0;
-	const deferredWarnings = new Map<keyof typeof deferredHandlers, RollupWarning[]>();
+	const deferredWarnings = new Map<keyof typeof deferredHandlers, RollupLog[]>();
 	let warningOccurred = false;
 
+	const add = (warning: RollupLog) => {
+		count += 1;
+		warningOccurred = true;
+
+		if (silent) return;
+		if ((warning.code as string) in deferredHandlers) {
+			getOrCreate(deferredWarnings, warning.code, getNewArray).push(warning);
+		} else if ((warning.code as string) in immediateHandlers) {
+			immediateHandlers[warning.code!](warning);
+		} else {
+			title(warning.message);
+			defaultBody(warning);
+		}
+	};
+
 	return {
-		add(warning: RollupWarning) {
-			count += 1;
-			warningOccurred = true;
-
-			if (warning.code! in deferredHandlers) {
-				getOrCreate(deferredWarnings, warning.code!, getNewArray).push(warning);
-			} else if (warning.code! in immediateHandlers) {
-				immediateHandlers[warning.code!](warning);
-			} else {
-				title(warning.message);
-
-				if (warning.url) info(warning.url);
-
-				const id = warning.loc?.file || warning.id;
-				if (id) {
-					const loc = warning.loc
-						? `${relativeId(id)} (${warning.loc.line}:${warning.loc.column})`
-						: relativeId(id);
-
-					stderr(bold(relativeId(loc)));
-				}
-
-				if (warning.frame) info(warning.frame);
-			}
-		},
+		add,
 
 		get count() {
 			return count;
 		},
 
 		flush() {
-			if (count === 0) return;
+			if (count === 0 || silent) return;
 
 			const codes = [...deferredWarnings.keys()].sort(
 				(a, b) => deferredWarnings.get(b)!.length - deferredWarnings.get(a)!.length
@@ -67,15 +64,35 @@ export default function batchWarnings(): BatchWarnings {
 			count = 0;
 		},
 
+		log(level, log) {
+			if (!logFilter(log)) return;
+			switch (level) {
+				case LOGLEVEL_WARN: {
+					return add(log);
+				}
+				case LOGLEVEL_DEBUG: {
+					if (!silent) {
+						stderr(bold(pc.blue(log.message)));
+						defaultBody(log);
+					}
+					return;
+				}
+				default: {
+					if (!silent) {
+						stderr(bold(pc.cyan(log.message)));
+						defaultBody(log);
+					}
+				}
+			}
+		},
+
 		get warningOccurred() {
 			return warningOccurred;
 		}
 	};
 }
 
-const immediateHandlers: {
-	[code: string]: (warning: RollupWarning) => void;
-} = {
+const immediateHandlers: Record<string, (warning: RollupLog) => void> = {
 	MISSING_NODE_BUILTINS(warning) {
 		title(`Missing shims for Node.js built-ins`);
 
@@ -92,9 +109,7 @@ const immediateHandlers: {
 	}
 };
 
-const deferredHandlers: {
-	[code: string]: (warnings: RollupWarning[]) => void;
-} = {
+const deferredHandlers: Record<string, (warnings: RollupLog[]) => void> = {
 	CIRCULAR_DEPENDENCY(warnings) {
 		title(`Circular dependenc${warnings.length > 1 ? 'ies' : 'y'}`);
 		const displayed = warnings.length > 5 ? warnings.slice(0, 3) : warnings;
@@ -176,22 +191,18 @@ const deferredHandlers: {
 	PLUGIN_WARNING(warnings) {
 		const nestedByPlugin = nest(warnings, 'plugin');
 
-		for (const { key: plugin, items } of nestedByPlugin) {
+		for (const { items } of nestedByPlugin) {
 			const nestedByMessage = nest(items, 'message');
 
 			let lastUrl = '';
 
 			for (const { key: message, items } of nestedByMessage) {
-				title(`Plugin ${plugin}: ${message}`);
+				title(message);
 				for (const warning of items) {
 					if (warning.url && warning.url !== lastUrl) info((lastUrl = warning.url));
 
-					const id = warning.id || warning.loc?.file;
-					if (id) {
-						let loc = relativeId(id);
-						if (warning.loc) {
-							loc += `: (${warning.loc.line}:${warning.loc.column})`;
-						}
+					const loc = formatLocation(warning);
+					if (loc) {
 						stderr(bold(loc));
 					}
 					if (warning.frame) info(warning.frame);
@@ -249,6 +260,19 @@ const deferredHandlers: {
 	}
 };
 
+function defaultBody(log: RollupLog): void {
+	if (log.url) {
+		info(log.url);
+	}
+
+	const loc = formatLocation(log);
+	if (loc) {
+		stderr(bold(loc));
+	}
+
+	if (log.frame) info(log.frame);
+}
+
 function title(string_: string): void {
 	stderr(bold(yellow(`(!) ${string_}`)));
 }
@@ -281,7 +305,7 @@ function nest<T extends Record<string, any>>(array: readonly T[], property: stri
 	return nested;
 }
 
-function showTruncatedWarnings(warnings: readonly RollupWarning[]): void {
+function showTruncatedWarnings(warnings: readonly RollupLog[]): void {
 	const nestedByModule = nest(warnings, 'id');
 
 	const displayedByModule = nestedByModule.length > 5 ? nestedByModule.slice(0, 3) : nestedByModule;
@@ -297,4 +321,18 @@ function showTruncatedWarnings(warnings: readonly RollupWarning[]): void {
 	if (nestedByModule.length > displayedByModule.length) {
 		stderr(`\n...and ${nestedByModule.length - displayedByModule.length} other files`);
 	}
+}
+
+function generateLogFilter(command: Record<string, any>) {
+	const filters = ensureArray(command.filterLogs).flatMap(filter => String(filter).split(','));
+	if (process.env.ROLLUP_FILTER_LOGS) {
+		filters.push(...process.env.ROLLUP_FILTER_LOGS.split(','));
+	}
+	return getLogFilter(filters);
+}
+
+function formatLocation(log: RollupLog): string | null {
+	const id = log.loc?.file || log.id;
+	if (!id) return null;
+	return log.loc ? `${id}:${log.loc.line}:${log.loc.column}` : id;
 }

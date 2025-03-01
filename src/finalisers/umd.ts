@@ -1,7 +1,8 @@
 import type { Bundle as MagicStringBundle } from 'magic-string';
 import type { NormalizedOutputOptions } from '../rollup/types';
-import { error, errorMissingNameOptionForUmdExport } from '../utils/error';
 import type { GenerateCodeSnippets } from '../utils/generateCodeSnippets';
+import { error, logMissingNameOptionForUmdExport } from '../utils/logs';
+import type { FinaliserOptions } from './index';
 import getCompleteAmdId from './shared/getCompleteAmdId';
 import { getExportBlock, getNamespaceMarkers } from './shared/getExportBlock';
 import getInteropBlock from './shared/getInteropBlock';
@@ -10,7 +11,6 @@ import { assignToDeepVariable } from './shared/setupNamespace';
 import trimEmptyImports from './shared/trimEmptyImports';
 import updateExtensionForRelativeAmdId from './shared/updateExtensionForRelativeAmdId';
 import warnOnBuiltins from './shared/warnOnBuiltins';
-import type { FinaliserOptions } from './index';
 
 function globalProperty(
 	name: string | false | undefined,
@@ -45,9 +45,9 @@ export default function umd(
 		indent: t,
 		intro,
 		namedExportsMode,
+		log,
 		outro,
-		snippets,
-		onwarn
+		snippets
 	}: FinaliserOptions,
 	{
 		amd,
@@ -58,9 +58,10 @@ export default function umd(
 		freeze,
 		interop,
 		name,
-		namespaceToStringTag,
+		generatedCode: { symbols },
 		globals,
 		noConflict,
+		reexportProtoFromExternal,
 		strict
 	}: NormalizedOutputOptions
 ): void {
@@ -69,10 +70,10 @@ export default function umd(
 	const globalVariable = compact ? 'g' : 'global';
 
 	if (hasExports && !name) {
-		return error(errorMissingNameOptionForUmdExport());
+		return error(logMissingNameOptionForUmdExport());
 	}
 
-	warnOnBuiltins(onwarn, dependencies);
+	warnOnBuiltins(log, dependencies);
 
 	const amdDeps = dependencies.map(
 		m => `'${updateExtensionForRelativeAmdId(m.importPath, amd.forceJsExtensionForImports)}'`
@@ -96,7 +97,8 @@ export default function umd(
 				`${
 					extend ? `${globalProperty(name!, globalVariable, getPropertyAccess)}${_}||${_}` : ''
 				}{}`,
-				snippets
+				snippets,
+				log
 			)
 		);
 
@@ -124,7 +126,8 @@ export default function umd(
 				globalVariable,
 				globals,
 				`${factoryVariable}(${globalDeps.join(`,${_}`)})`,
-				snippets
+				snippets,
+				log
 			)};`;
 		} else {
 			const module = globalDeps.shift();
@@ -149,7 +152,7 @@ export default function umd(
 	} else {
 		iifeExport = `${factoryVariable}(${globalDeps.join(`,${_}`)})`;
 		if (!namedExportsMode && hasExports) {
-			iifeExport = assignToDeepVariable(name!, globalVariable, globals, iifeExport, snippets);
+			iifeExport = assignToDeepVariable(name!, globalVariable, globals, iifeExport, snippets, log);
 		}
 	}
 
@@ -165,7 +168,7 @@ export default function umd(
 	const iifeEnd = iifeNeedsGlobal ? ')' : '';
 	const cjsIntro = iifeNeedsGlobal
 		? `${t}typeof exports${_}===${_}'object'${_}&&${_}typeof module${_}!==${_}'undefined'${_}?` +
-		  `${_}${cjsExport}${factoryVariable}(${cjsDeps.join(`,${_}`)})${_}:${n}`
+			`${_}${cjsExport}${factoryVariable}(${cjsDeps.join(`,${_}`)})${_}:${n}`
 		: '';
 
 	const wrapperIntro =
@@ -188,7 +191,7 @@ export default function umd(
 			interop,
 			externalLiveBindings,
 			freeze,
-			namespaceToStringTag,
+			symbols,
 			accessedGlobals,
 			t,
 			snippets
@@ -202,12 +205,13 @@ export default function umd(
 		interop,
 		snippets,
 		t,
-		externalLiveBindings
+		externalLiveBindings,
+		reexportProtoFromExternal
 	);
 	let namespaceMarkers = getNamespaceMarkers(
 		namedExportsMode && hasExports,
 		esModule === true || (esModule === 'if-default-prop' && hasDefaultExport),
-		namespaceToStringTag,
+		symbols,
 		snippets
 	);
 	if (namespaceMarkers) {

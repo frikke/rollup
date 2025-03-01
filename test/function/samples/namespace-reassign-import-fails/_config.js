@@ -1,6 +1,6 @@
 const assert = require('node:assert');
 const path = require('node:path');
-const { assertIncludes } = require('../../../utils.js');
+const { assertIncludes } = require('../../../testHelpers.js');
 const ID_MAIN = path.join(__dirname, 'main.js');
 const ID_FOO = path.join(__dirname, 'foo.js');
 
@@ -16,7 +16,7 @@ module.exports = defineTest({
 			code: 'MISSING_EXPORT',
 			exporter: ID_FOO,
 			id: ID_MAIN,
-			message: '"bar" is not exported by "foo.js", imported by "main.js".',
+			message: 'main.js (4:4): "bar" is not exported by "foo.js", imported by "main.js".',
 			url: 'https://rollupjs.org/troubleshooting/#error-name-is-not-exported-by-module',
 			pos: 48,
 			loc: {
@@ -32,7 +32,7 @@ module.exports = defineTest({
 		},
 		{
 			code: 'ILLEGAL_REASSIGNMENT',
-			message: 'Illegal reassignment of import "exp" in "main.js".',
+			message: 'main.js (3:0): Illegal reassignment of import "exp" in "main.js".',
 			id: ID_MAIN,
 			pos: 31,
 			loc: {
@@ -49,7 +49,7 @@ module.exports = defineTest({
 		},
 		{
 			code: 'ILLEGAL_REASSIGNMENT',
-			message: 'Illegal reassignment of import "exp" in "main.js".',
+			message: 'main.js (4:0): Illegal reassignment of import "exp" in "main.js".',
 			id: ID_MAIN,
 			pos: 44,
 			loc: {

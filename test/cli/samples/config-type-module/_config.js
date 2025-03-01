@@ -1,5 +1,5 @@
 // @ts-expect-error not included in types
-const { assertIncludes } = require('../../../utils.js');
+const { assertIncludes } = require('../../../testHelpers.js');
 
 module.exports = defineTest({
 	description: 'tries to load .js config file if package type is "module"',
@@ -8,7 +8,7 @@ module.exports = defineTest({
 	stderr: stderr => {
 		assertIncludes(
 			stderr,
-			'ReferenceError: module is not defined in ES module scope\n' +
+			'Original error: module is not defined in ES module scope\n' +
 				"This file is being treated as an ES module because it has a '.js' file extension and"
 		);
 		assertIncludes(

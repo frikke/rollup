@@ -1,11 +1,12 @@
 const { unlinkSync, writeFileSync } = require('node:fs');
 const path = require('node:path');
-const { atomicWriteFileSync } = require('../../../../utils');
+const { atomicWriteFileSync } = require('../../../../testHelpers');
 
 let configFile;
 
 module.exports = defineTest({
 	description: 'keeps watching the config file in case the initial file contains an error',
+	retry: true,
 	command: 'rollup -cw',
 	before() {
 		configFile = path.join(__dirname, 'rollup.config.mjs');

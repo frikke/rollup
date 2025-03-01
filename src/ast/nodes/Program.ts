@@ -1,8 +1,8 @@
 import { locate } from 'locate-character';
 import type MagicString from 'magic-string';
-import getCodeFrame from '../../utils/getCodeFrame';
-import { getOriginalLocation } from '../../utils/getOriginalLocation';
-import relativeId from '../../utils/relativeId';
+import type { RollupAnnotation } from '../../utils/astConverterHelpers';
+import { LOGLEVEL_INFO, LOGLEVEL_WARN } from '../../utils/logging';
+import { logFirstSideEffect, logInvalidAnnotation } from '../../utils/logs';
 import {
 	findFirstLineBreakOutsideComment,
 	type RenderOptions,
@@ -11,12 +11,19 @@ import {
 import type { HasEffectsContext, InclusionContext } from '../ExecutionContext';
 import { createHasEffectsContext } from '../ExecutionContext';
 import type * as NodeType from './NodeType';
-import { type IncludeChildren, NodeBase, type StatementNode } from './shared/Node';
+import {
+	doNotDeoptimize,
+	type IncludeChildren,
+	NodeBase,
+	onlyIncludeSelfNoDeoptimize,
+	type StatementNode
+} from './shared/Node';
 
 export default class Program extends NodeBase {
 	declare body: readonly StatementNode[];
 	declare sourceType: 'module';
 	declare type: NodeType.tProgram;
+	declare invalidAnnotations?: readonly RollupAnnotation[];
 
 	private hasCachedEffect: boolean | null = null;
 	private hasLoggedEffect = false;
@@ -33,33 +40,14 @@ export default class Program extends NodeBase {
 	hasEffects(context: HasEffectsContext): boolean {
 		for (const node of this.body) {
 			if (node.hasEffects(context)) {
-				if (this.context.options.experimentalLogSideEffects && !this.hasLoggedEffect) {
+				if (this.scope.context.options.experimentalLogSideEffects && !this.hasLoggedEffect) {
 					this.hasLoggedEffect = true;
-					const { code, module } = this.context;
-					const { line, column } = locate(code, node.start, { offsetLine: 1 });
-					console.log(
-						`First side effect in ${relativeId(
-							module.id
-						)} is at (${line}:${column})\n${getCodeFrame(code, line, column)}`
+					const { code, log, module } = this.scope.context;
+					log(
+						LOGLEVEL_INFO,
+						logFirstSideEffect(code, module.id, locate(code, node.start, { offsetLine: 1 })!),
+						node.start
 					);
-					try {
-						const { column: originalColumn, line: originalLine } = getOriginalLocation(
-							module.sourcemapChain,
-							{ column, line }
-						);
-						if (originalLine !== line) {
-							console.log(
-								`Original location is at (${originalLine}:${originalColumn})\n${getCodeFrame(
-									module.originalCode,
-									originalLine,
-									originalColumn
-								)}\n`
-							);
-						}
-					} catch {
-						/* ignored */
-					}
-					console.log();
 				}
 				return (this.hasCachedEffect = true);
 			}
@@ -74,6 +62,25 @@ export default class Program extends NodeBase {
 				node.include(context, includeChildrenRecursively);
 			}
 		}
+	}
+
+	initialise() {
+		super.initialise();
+		if (this.invalidAnnotations)
+			for (const { start, end, type } of this.invalidAnnotations) {
+				this.scope.context.magicString.remove(start, end);
+				if (type === 'pure' || type === 'noSideEffects') {
+					this.scope.context.log(
+						LOGLEVEL_WARN,
+						logInvalidAnnotation(
+							this.scope.context.code.slice(start, end),
+							this.scope.context.module.id,
+							type
+						),
+						start
+					);
+				}
+			}
 	}
 
 	render(code: MagicString, options: RenderOptions): void {
@@ -98,6 +105,7 @@ export default class Program extends NodeBase {
 			super.render(code, options);
 		}
 	}
-
-	protected applyDeoptimizations() {}
 }
+
+Program.prototype.includeNode = onlyIncludeSelfNoDeoptimize;
+Program.prototype.applyDeoptimizations = doNotDeoptimize;

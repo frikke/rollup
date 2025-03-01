@@ -1,9 +1,9 @@
 import { extractAssignedNames } from '@rollup/pluginutils';
-import type * as acorn from 'acorn';
 import { locate } from 'locate-character';
 import MagicString from 'magic-string';
-import ExternalModule from './ExternalModule';
-import type Graph from './Graph';
+import { parseAsync } from '../native';
+import { convertProgram } from './ast/bufferParsers';
+import type { InclusionContext } from './ast/ExecutionContext';
 import { createInclusionContext } from './ast/ExecutionContext';
 import { nodeConstructors } from './ast/nodes';
 import ExportAllDeclaration from './ast/nodes/ExportAllDeclaration';
@@ -16,23 +16,29 @@ import type ImportExpression from './ast/nodes/ImportExpression';
 import ImportNamespaceSpecifier from './ast/nodes/ImportNamespaceSpecifier';
 import Literal from './ast/nodes/Literal';
 import type MetaProperty from './ast/nodes/MetaProperty';
-import Program from './ast/nodes/Program';
-import TemplateLiteral from './ast/nodes/TemplateLiteral';
+import * as NodeType from './ast/nodes/NodeType';
+import type Program from './ast/nodes/Program';
+import type { ExpressionEntity } from './ast/nodes/shared/Expression';
+import type { NodeBase } from './ast/nodes/shared/Node';
 import VariableDeclaration from './ast/nodes/VariableDeclaration';
-import type { ExpressionNode, NodeBase } from './ast/nodes/shared/Node';
 import ModuleScope from './ast/scopes/ModuleScope';
-import { type PathTracker, UNKNOWN_PATH } from './ast/utils/PathTracker';
+import type { ObjectPath } from './ast/utils/PathTracker';
+import { type EntityPathTracker, UNKNOWN_PATH } from './ast/utils/PathTracker';
 import ExportDefaultVariable from './ast/variables/ExportDefaultVariable';
 import ExportShimVariable from './ast/variables/ExportShimVariable';
 import ExternalVariable from './ast/variables/ExternalVariable';
 import NamespaceVariable from './ast/variables/NamespaceVariable';
 import SyntheticNamedExportVariable from './ast/variables/SyntheticNamedExportVariable';
 import type Variable from './ast/variables/Variable';
+import ExternalModule from './ExternalModule';
+import type Graph from './Graph';
 import type {
+	AstNode,
 	CustomPluginOptions,
 	DecodedSourceMapOrMissing,
 	EmittedFile,
 	ExistingDecodedSourceMap,
+	LogLevel,
 	ModuleInfo,
 	ModuleJSON,
 	ModuleOptions,
@@ -43,40 +49,46 @@ import type {
 	ResolvedIdMap,
 	RollupError,
 	RollupLog,
-	RollupWarning,
 	TransformModuleJSON
 } from './rollup/types';
 import { EMPTY_OBJECT } from './utils/blank';
+import type { LiteralStringNode, TemplateLiteralNode } from './utils/bufferToAst';
 import { BuildPhase } from './utils/buildPhase';
-import {
-	augmentCodeLocation,
-	error,
-	errorAmbiguousExternalNamespaces,
-	errorCircularReexport,
-	errorInconsistentImportAssertions,
-	errorInvalidFormatForTopLevelAwait,
-	errorInvalidSourcemapForError,
-	errorMissingExport,
-	errorNamespaceConflict,
-	errorParseError,
-	errorShimmedExport,
-	errorSyntheticNamedExportsNeedNamespaceExport,
-	warnDeprecation
-} from './utils/error';
+import { decodedSourcemap, resetSourcemapCache } from './utils/decodedSourcemap';
 import { getId } from './utils/getId';
 import { getNewSet, getOrCreate } from './utils/getOrCreate';
 import { getOriginalLocation } from './utils/getOriginalLocation';
+import { cacheObjectGetters } from './utils/getter';
 import { makeLegal } from './utils/identifierHelpers';
+import { LOGLEVEL_WARN } from './utils/logging';
 import {
-	doAssertionsDiffer,
-	getAssertionsFromImportExportDeclaration
-} from './utils/parseAssertions';
+	augmentCodeLocation,
+	error,
+	logAmbiguousExternalNamespaces,
+	logCircularReexport,
+	logDuplicateExportError,
+	logInconsistentImportAttributes,
+	logInvalidFormatForTopLevelAwait,
+	logInvalidSourcemapForError,
+	logMissingEntryExport,
+	logMissingExport,
+	logMissingJsxExport,
+	logModuleParseError,
+	logNamespaceConflict,
+	logRedeclarationError,
+	logShimmedExport,
+	logSyntheticNamedExportsNeedNamespaceExport
+} from './utils/logs';
+import { parseAst } from './utils/parseAst';
+import {
+	doAttributesDiffer,
+	getAttributesFromImportExportDeclaration
+} from './utils/parseImportAttributes';
 import { basename, extname } from './utils/path';
 import type { PureFunctions } from './utils/pureFunctions';
 import type { RenderOptions } from './utils/renderHelpers';
 import { timeEnd, timeStart } from './utils/timers';
 import { markModuleAndImpureDependenciesAsExecuted } from './utils/traverseStaticDependencies';
-import { URL_THIS_GETMODULEINFO } from './utils/urls';
 import { MISSING_EXPORT_SHIM_VARIABLE } from './utils/variableNames';
 
 interface ImportDescription {
@@ -105,11 +117,13 @@ export interface AstContext {
 	) => void;
 	addImport: (node: ImportDeclaration) => void;
 	addImportMeta: (node: MetaProperty) => void;
+	addImportSource: (importSource: string) => void;
 	code: string;
-	deoptimizationTracker: PathTracker;
+	deoptimizationTracker: EntityPathTracker;
 	error: (properties: RollupLog, pos: number) => never;
 	fileName: string;
 	getExports: () => string[];
+	getImportedJsxFactoryVariable: (baseName: string, pos: number, importSource: string) => Variable;
 	getModuleExecIndex: () => number;
 	getModuleName: () => string;
 	getNodeConstructor: (name: string) => typeof NodeBase;
@@ -117,21 +131,26 @@ export interface AstContext {
 	importDescriptions: Map<string, ImportDescription>;
 	includeAllExports: () => void;
 	includeDynamicImport: (node: ImportExpression) => void;
-	includeVariableInModule: (variable: Variable) => void;
+	includeVariableInModule: (
+		variable: Variable,
+		path: ObjectPath,
+		context: InclusionContext
+	) => void;
+	log: (level: LogLevel, properties: RollupLog, pos: number) => void;
 	magicString: MagicString;
 	manualPureFunctions: PureFunctions;
 	module: Module; // not to be used for tree-shaking
 	moduleContext: string;
+	newlyIncludedVariableInits: Set<ExpressionEntity>;
 	options: NormalizedInputOptions;
 	requestTreeshakingPass: () => void;
 	traceExport: (name: string) => Variable | null;
 	traceVariable: (name: string) => Variable | null;
 	usesTopLevelAwait: boolean;
-	warn: (warning: RollupWarning, pos: number) => void;
 }
 
 export interface DynamicImport {
-	argument: string | ExpressionNode;
+	argument: string | AstNode;
 	id: string | null;
 	node: ImportExpression;
 	resolution: Module | ExternalModule | string | null;
@@ -152,7 +171,7 @@ function getVariableForExportNameRecursive(
 	const searchedModules = searchedNamesAndModules.get(name);
 	if (searchedModules) {
 		if (searchedModules.has(target)) {
-			return isExportAllSearch ? [null] : error(errorCircularReexport(name, target.id));
+			return isExportAllSearch ? [null] : error(logCircularReexport(name, target.id));
 		}
 		searchedModules.add(target);
 	} else {
@@ -179,8 +198,8 @@ function getAndExtendSideEffectModules(variable: Variable, module: Module): Set<
 			currentVariable instanceof ExportDefaultVariable
 				? currentVariable.getDirectOriginalVariable()
 				: currentVariable instanceof SyntheticNamedExportVariable
-				? currentVariable.syntheticNamespace
-				: null;
+					? currentVariable.syntheticNamespace
+					: null;
 		if (!currentVariable || referencedVariables.has(currentVariable)) {
 			break;
 		}
@@ -212,11 +231,13 @@ export default class Module {
 	readonly dynamicImports: DynamicImport[] = [];
 	excludeFromSourcemap: boolean;
 	execIndex = Infinity;
+	hasTreeShakingPassStarted = false;
 	readonly implicitlyLoadedAfter = new Set<Module>();
 	readonly implicitlyLoadedBefore = new Set<Module>();
 	readonly importDescriptions = new Map<string, ImportDescription>();
 	readonly importMetas: MetaProperty[] = [];
 	importedFromNotTreeshaken = false;
+	shebang: undefined | string;
 	readonly importers: string[] = [];
 	readonly includedDynamicImporters: Module[] = [];
 	readonly includedImports = new Set<Variable>();
@@ -233,14 +254,15 @@ export default class Module {
 	declare scope: ModuleScope;
 	readonly sideEffectDependenciesByVariable = new Map<Variable, Set<Module>>();
 	declare sourcemapChain: DecodedSourceMapOrMissing[];
-	readonly sourcesWithAssertions = new Map<string, Record<string, string>>();
+	readonly sourcesWithAttributes = new Map<string, Record<string, string>>();
 	declare transformFiles?: EmittedFile[];
 
 	private allExportNames: Set<string> | null = null;
+	private allExportsIncluded = false;
 	private ast: Program | null = null;
-	private declare astContext: AstContext;
+	declare private astContext: AstContext;
 	private readonly context: string;
-	private declare customTransformCache: boolean;
+	declare private customTransformCache: boolean;
 	private readonly exportAllModules: (Module | ExternalModule)[] = [];
 	private readonly exportAllSources = new Set<string>();
 	private exportNamesByVariable: Map<Variable, string[]> | null = null;
@@ -265,7 +287,7 @@ export default class Module {
 		moduleSideEffects: boolean | 'no-treeshake',
 		syntheticNamedExports: boolean | string,
 		meta: CustomPluginOptions,
-		assertions: Record<string, string>
+		attributes: Record<string, string>
 	) {
 		this.excludeFromSourcemap = /\0/.test(id);
 		this.context = options.moduleContext(id);
@@ -282,12 +304,12 @@ export default class Module {
 			implicitlyLoadedBefore,
 			importers,
 			reexportDescriptions,
-			sourcesWithAssertions
+			sourcesWithAttributes
 		} = this;
 
 		this.info = {
-			assertions,
 			ast: null,
+			attributes,
 			code: null,
 			get dynamicallyImportedIdResolutions() {
 				return dynamicImports
@@ -329,37 +351,25 @@ export default class Module {
 				}
 				return module.exports.has('default') || reexportDescriptions.has('default');
 			},
-			get hasModuleSideEffects() {
-				warnDeprecation(
-					'Accessing ModuleInfo.hasModuleSideEffects from plugins is deprecated. Please use ModuleInfo.moduleSideEffects instead.',
-					URL_THIS_GETMODULEINFO,
-					true,
-					options
-				);
-				return this.moduleSideEffects;
-			},
 			id,
 			get implicitlyLoadedAfterOneOf() {
-				// eslint-disable-next-line unicorn/prefer-spread
 				return Array.from(implicitlyLoadedAfter, getId).sort();
 			},
 			get implicitlyLoadedBefore() {
-				// eslint-disable-next-line unicorn/prefer-spread
 				return Array.from(implicitlyLoadedBefore, getId).sort();
 			},
 			get importedIdResolutions() {
-				// eslint-disable-next-line unicorn/prefer-spread
 				return Array.from(
-					sourcesWithAssertions.keys(),
+					sourcesWithAttributes.keys(),
 					source => module.resolvedIds[source]
 				).filter(Boolean);
 			},
 			get importedIds() {
 				// We cannot use this.dependencies because this is needed before
 				// dependencies are populated
-				// eslint-disable-next-line unicorn/prefer-spread
+
 				return Array.from(
-					sourcesWithAssertions.keys(),
+					sourcesWithAttributes.keys(),
 					source => module.resolvedIds[source]?.id
 				).filter(Boolean);
 			},
@@ -378,11 +388,6 @@ export default class Module {
 			moduleSideEffects,
 			syntheticNamedExports
 		};
-		// Hide the deprecated key so that it only warns when accessed explicitly
-		// eslint-disable-next-line unicorn/consistent-destructuring
-		Object.defineProperty(this.info, 'hasModuleSideEffects', {
-			enumerable: false
-		});
 	}
 
 	basename(): string {
@@ -396,8 +401,26 @@ export default class Module {
 		this.ast!.bind();
 	}
 
-	error(properties: RollupError, pos: number): never {
-		this.addLocationToLogProps(properties, pos);
+	cacheInfoGetters(): void {
+		cacheObjectGetters(this.info, [
+			'dynamicallyImportedIdResolutions',
+			'dynamicallyImportedIds',
+			'dynamicImporters',
+			'exportedBindings',
+			'exports',
+			'hasDefaultExport',
+			'implicitlyLoadedAfterOneOf',
+			'implicitlyLoadedBefore',
+			'importedIdResolutions',
+			'importedIds',
+			'importers'
+		]);
+	}
+
+	error(properties: RollupError, pos: number | undefined): never {
+		if (pos !== undefined) {
+			this.addLocationToLogProps(properties, pos);
+		}
 		return error(properties);
 	}
 
@@ -451,7 +474,7 @@ export default class Module {
 		) {
 			for (const exportName of [...this.getReexports(), ...this.getExports()]) {
 				const [exportedVariable] = this.getVariableForExportName(exportName);
-				if (exportedVariable) {
+				if (exportedVariable?.included) {
 					dependencyVariables.add(exportedVariable);
 				}
 			}
@@ -544,7 +567,7 @@ export default class Module {
 		const removedExports: string[] = [];
 		for (const exportName of this.exports.keys()) {
 			const [variable] = this.getVariableForExportName(exportName);
-			(variable && variable.included ? renderedExports : removedExports).push(exportName);
+			(variable?.included ? renderedExports : removedExports).push(exportName);
 		}
 		return { removedExports, renderedExports };
 	}
@@ -561,7 +584,7 @@ export default class Module {
 		}
 		if (!this.syntheticNamespace) {
 			return error(
-				errorSyntheticNamedExportsNeedNamespaceExport(this.id, this.info.syntheticNamedExports)
+				logSyntheticNamedExportsNeedNamespaceExport(this.id, this.info.syntheticNamedExports)
 			);
 		}
 		return this.syntheticNamespace;
@@ -603,7 +626,7 @@ export default class Module {
 			);
 			if (!variable) {
 				return this.error(
-					errorMissingExport(reexportDeclaration.localName, this.id, reexportDeclaration.module.id),
+					logMissingExport(reexportDeclaration.localName, this.id, reexportDeclaration.module.id),
 					reexportDeclaration.start
 				);
 			}
@@ -689,18 +712,22 @@ export default class Module {
 	}
 
 	includeAllExports(includeNamespaceMembers: boolean): void {
+		if (this.allExportsIncluded) return;
+		this.allExportsIncluded = true;
 		if (!this.isExecuted) {
 			markModuleAndImpureDependenciesAsExecuted(this);
 			this.graph.needsTreeshakingPass = true;
 		}
 
+		const inclusionContext = createInclusionContext();
 		for (const exportName of this.exports.keys()) {
 			if (includeNamespaceMembers || exportName !== this.info.syntheticNamedExports) {
-				const variable = this.getVariableForExportName(exportName)[0]!;
-				variable.deoptimizePath(UNKNOWN_PATH);
-				if (!variable.included) {
-					this.includeVariable(variable);
+				const variable = this.getVariableForExportName(exportName)[0];
+				if (!variable) {
+					return error(logMissingEntryExport(exportName, this.id));
 				}
+				this.includeVariable(variable, UNKNOWN_PATH, inclusionContext);
+				variable.deoptimizePath(UNKNOWN_PATH);
 			}
 		}
 
@@ -708,9 +735,7 @@ export default class Module {
 			const [variable] = this.getVariableForExportName(name);
 			if (variable) {
 				variable.deoptimizePath(UNKNOWN_PATH);
-				if (!variable.included) {
-					this.includeVariable(variable);
-				}
+				this.includeVariable(variable, UNKNOWN_PATH, inclusionContext);
 				if (variable instanceof ExternalVariable) {
 					variable.module.reexported = true;
 				}
@@ -735,13 +760,12 @@ export default class Module {
 
 		let includeNamespaceMembers = false;
 
+		const inclusionContext = createInclusionContext();
 		for (const name of names) {
 			const variable = this.getVariableForExportName(name)[0];
 			if (variable) {
 				variable.deoptimizePath(UNKNOWN_PATH);
-				if (!variable.included) {
-					this.includeVariable(variable);
-				}
+				this.includeVariable(variable, UNKNOWN_PATH, inclusionContext);
 			}
 
 			if (!this.exports.has(name) && !this.reexportDescriptions.has(name)) {
@@ -781,18 +805,23 @@ export default class Module {
 		this.exportAllModules.push(...externalExportAllModules);
 	}
 
+	log(level: LogLevel, properties: RollupLog, pos: number): void {
+		this.addLocationToLogProps(properties, pos);
+		this.options.onLog(level, properties);
+	}
+
 	render(options: RenderOptions): { source: MagicString; usesTopLevelAwait: boolean } {
 		const source = this.magicString.clone();
 		this.ast!.render(source, options);
 		source.trim();
 		const { usesTopLevelAwait } = this.astContext;
 		if (usesTopLevelAwait && options.format !== 'es' && options.format !== 'system') {
-			return error(errorInvalidFormatForTopLevelAwait(this.id, options.format));
+			return error(logInvalidFormatForTopLevelAwait(this.id, options.format));
 		}
 		return { source, usesTopLevelAwait };
 	}
 
-	setSource({
+	async setSource({
 		ast,
 		code,
 		customTransformCache,
@@ -806,23 +835,33 @@ export default class Module {
 	}: TransformModuleJSON & {
 		resolvedIds?: ResolvedIdMap;
 		transformFiles?: EmittedFile[] | undefined;
-	}): void {
+	}): Promise<void> {
 		timeStart('generate ast', 3);
+		if (code.startsWith('#!')) {
+			const shebangEndPosition = code.indexOf('\n');
+			this.shebang = code.slice(2, shebangEndPosition);
+		}
 
 		this.info.code = code;
 		this.originalCode = originalCode;
-		this.originalSourcemap = originalSourcemap;
-		this.sourcemapChain = sourcemapChain;
+
+		// We need to call decodedSourcemap on the input in case they were hydrated from json in the cache and don't
+		// have the lazy evaluation cache configured. Right now this isn't enforced by the type system because the
+		// RollupCache stores `ExistingDecodedSourcemap` instead of `ExistingRawSourcemap`
+		this.originalSourcemap = decodedSourcemap(originalSourcemap);
+		this.sourcemapChain = sourcemapChain.map(mapOrMissing =>
+			mapOrMissing.missing ? mapOrMissing : decodedSourcemap(mapOrMissing)
+		);
+
+		// If coming from cache and this value is already fully decoded, we want to re-encode here to save memory.
+		resetSourcemapCache(this.originalSourcemap, this.sourcemapChain);
+
 		if (transformFiles) {
 			this.transformFiles = transformFiles;
 		}
 		this.transformDependencies = transformDependencies;
 		this.customTransformCache = customTransformCache;
 		this.updateOptions(moduleOptions);
-		const moduleAst = ast ?? this.tryParse();
-
-		timeEnd('generate ast', 3);
-		timeStart('analyze ast', 3);
 
 		this.resolvedIds = resolvedIds ?? Object.create(null);
 
@@ -840,11 +879,13 @@ export default class Module {
 			addExport: this.addExport.bind(this),
 			addImport: this.addImport.bind(this),
 			addImportMeta: this.addImportMeta.bind(this),
+			addImportSource: this.addImportSource.bind(this),
 			code, // Only needed for debugging
 			deoptimizationTracker: this.graph.deoptimizationTracker,
 			error: this.error.bind(this),
 			fileName, // Needed for warnings
 			getExports: this.getExports.bind(this),
+			getImportedJsxFactoryVariable: this.getImportedJsxFactoryVariable.bind(this),
 			getModuleExecIndex: () => this.execIndex,
 			getModuleName: this.basename.bind(this),
 			getNodeConstructor: (name: string) => nodeConstructors[name] || nodeConstructors.UnknownNode,
@@ -853,27 +894,34 @@ export default class Module {
 			includeAllExports: () => this.includeAllExports(true),
 			includeDynamicImport: this.includeDynamicImport.bind(this),
 			includeVariableInModule: this.includeVariableInModule.bind(this),
+			log: this.log.bind(this),
 			magicString: this.magicString,
 			manualPureFunctions: this.graph.pureFunctions,
 			module: this,
 			moduleContext: this.context,
+			newlyIncludedVariableInits: this.graph.newlyIncludedVariableInits,
 			options: this.options,
 			requestTreeshakingPass: () => (this.graph.needsTreeshakingPass = true),
 			traceExport: (name: string) => this.getVariableForExportName(name)[0],
 			traceVariable: this.traceVariable.bind(this),
-			usesTopLevelAwait: false,
-			warn: this.warn.bind(this)
+			usesTopLevelAwait: false
 		};
 
 		this.scope = new ModuleScope(this.graph.scope, this.astContext);
 		this.namespace = new NamespaceVariable(this.astContext);
-		this.ast = new Program(moduleAst, { context: this.astContext, type: 'Module' }, this.scope);
+		const programParent = { context: this.astContext, type: 'Module' };
 
-		// Assign AST directly if has existing one as there's no way to drop it from memory.
-		// If cache is enabled, also assign directly as otherwise it takes more CPU and memory to re-compute.
-		if (ast || this.options.cache !== false) {
-			this.info.ast = moduleAst;
+		if (ast) {
+			this.ast = new nodeConstructors[ast.type](programParent, this.scope).parseNode(
+				ast
+			) as Program;
+			this.info.ast = ast;
 		} else {
+			// Measuring asynchronous code does not provide reasonable results
+			timeEnd('generate ast', 3);
+			const astBuffer = await parseAsync(code, false, this.options.jsx !== false);
+			timeStart('generate ast', 3);
+			this.ast = convertProgram(astBuffer, programParent, this.scope);
 			// Make lazy and apply LRU cache to not hog the memory
 			Object.defineProperty(this.info, 'ast', {
 				get: () => {
@@ -881,6 +929,16 @@ export default class Module {
 						return this.graph.astLru.get(fileName)!;
 					} else {
 						const parsedAst = this.tryParse();
+						// If the cache is not disabled, we need to keep the AST in memory
+						// until the end when the cache is generated
+						if (this.options.cache !== false) {
+							Object.defineProperty(this.info, 'ast', {
+								value: parsedAst
+							});
+							return parsedAst;
+						}
+						// Otherwise, we keep it in a small LRU cache to not hog too much
+						// memory but allow the same AST to be requested several times.
 						this.graph.astLru.set(fileName, parsedAst);
 						return parsedAst;
 					}
@@ -888,16 +946,16 @@ export default class Module {
 			});
 		}
 
-		timeEnd('analyze ast', 3);
+		timeEnd('generate ast', 3);
 	}
 
 	toJSON(): ModuleJSON {
 		return {
-			assertions: this.info.assertions,
 			ast: this.info.ast!,
+			attributes: this.info.attributes,
 			code: this.info.code!,
 			customTransformCache: this.customTransformCache,
-			// eslint-disable-next-line unicorn/prefer-spread
+
 			dependencies: Array.from(this.dependencies, getId),
 			id: this.id,
 			meta: this.info.meta,
@@ -947,7 +1005,7 @@ export default class Module {
 
 			if (!declaration) {
 				return this.error(
-					errorMissingExport(importDescription.name, this.id, otherModule.id),
+					logMissingExport(importDescription.name, this.id, otherModule.id),
 					importDescription.start
 				);
 			}
@@ -974,21 +1032,28 @@ export default class Module {
 		}
 	}
 
-	warn(properties: RollupWarning, pos: number): void {
-		this.addLocationToLogProps(properties, pos);
-		this.options.onwarn(properties);
-	}
-
 	private addDynamicImport(node: ImportExpression) {
-		let argument: ExpressionNode | string = node.source;
-		if (argument instanceof TemplateLiteral) {
-			if (argument.quasis.length === 1 && argument.quasis[0].value.cooked) {
-				argument = argument.quasis[0].value.cooked;
+		let argument: AstNode | string = node.sourceAstNode;
+		if (argument.type === NodeType.TemplateLiteral) {
+			if (
+				(argument as TemplateLiteralNode).quasis.length === 1 &&
+				typeof (argument as TemplateLiteralNode).quasis[0].value.cooked === 'string'
+			) {
+				argument = (argument as TemplateLiteralNode).quasis[0].value.cooked!;
 			}
-		} else if (argument instanceof Literal && typeof argument.value === 'string') {
-			argument = argument.value;
+		} else if (
+			argument.type === NodeType.Literal &&
+			typeof (argument as LiteralStringNode).value === 'string'
+		) {
+			argument = (argument as LiteralStringNode).value!;
 		}
 		this.dynamicImports.push({ argument, id: null, node, resolution: null });
+	}
+
+	private assertUniqueExportName(name: string, nodeStart: number) {
+		if (this.exports.has(name) || this.reexportDescriptions.has(name)) {
+			this.error(logDuplicateExportError(name), nodeStart);
+		}
 	}
 
 	private addExport(
@@ -997,6 +1062,7 @@ export default class Module {
 		if (node instanceof ExportDefaultDeclaration) {
 			// export default foo;
 
+			this.assertUniqueExportName('default', node.start);
 			this.exports.set('default', {
 				identifier: node.variable.getAssignedVariableName(),
 				localName: 'default'
@@ -1007,7 +1073,8 @@ export default class Module {
 			if (node.exported) {
 				// export * as name from './other'
 
-				const name = node.exported.name;
+				const name = node.exported instanceof Literal ? node.exported.value : node.exported.name;
+				this.assertUniqueExportName(name, node.exported.start);
 				this.reexportDescriptions.set(name, {
 					localName: '*',
 					module: null as never, // filled in later,
@@ -1026,6 +1093,7 @@ export default class Module {
 			this.addSource(source, node);
 			for (const { exported, local, start } of node.specifiers) {
 				const name = exported instanceof Literal ? exported.value : exported.name;
+				this.assertUniqueExportName(name, start);
 				this.reexportDescriptions.set(name, {
 					localName: local instanceof Literal ? local.value : local.name,
 					module: null as never, // filled in later,
@@ -1041,6 +1109,7 @@ export default class Module {
 
 				for (const declarator of declaration.declarations) {
 					for (const localName of extractAssignedNames(declarator.id)) {
+						this.assertUniqueExportName(localName, declarator.id.start);
 						this.exports.set(localName, { identifier: null, localName });
 					}
 				}
@@ -1048,6 +1117,7 @@ export default class Module {
 				// export function foo () {}
 
 				const localName = (declaration.id as Identifier).name;
+				this.assertUniqueExportName(localName, declaration.id!.start);
 				this.exports.set(localName, { identifier: null, localName });
 			}
 		} else {
@@ -1057,6 +1127,7 @@ export default class Module {
 				// except for reexports, local must be an Identifier
 				const localName = (local as Identifier).name;
 				const exportedName = exported instanceof Identifier ? exported.name : exported.value;
+				this.assertUniqueExportName(exportedName, exported.start);
 				this.exports.set(exportedName, { identifier: null, localName });
 			}
 		}
@@ -1065,21 +1136,33 @@ export default class Module {
 	private addImport(node: ImportDeclaration): void {
 		const source = node.source.value;
 		this.addSource(source, node);
+
 		for (const specifier of node.specifiers) {
+			const localName = specifier.local.name;
+			if (this.scope.variables.has(localName) || this.importDescriptions.has(localName)) {
+				this.error(logRedeclarationError(localName), specifier.local.start);
+			}
+
 			const name =
 				specifier instanceof ImportDefaultSpecifier
 					? 'default'
 					: specifier instanceof ImportNamespaceSpecifier
-					? '*'
-					: specifier.imported instanceof Identifier
-					? specifier.imported.name
-					: specifier.imported.value;
-			this.importDescriptions.set(specifier.local.name, {
+						? '*'
+						: specifier.imported instanceof Identifier
+							? specifier.imported.name
+							: specifier.imported.value;
+			this.importDescriptions.set(localName, {
 				module: null as never, // filled in later
 				name,
 				source,
 				start: specifier.start
 			});
+		}
+	}
+
+	private addImportSource(importSource: string): void {
+		if (importSource && !this.sourcesWithAttributes.has(importSource)) {
+			this.sourcesWithAttributes.set(importSource, EMPTY_OBJECT);
 		}
 	}
 
@@ -1098,7 +1181,10 @@ export default class Module {
 				({ column, line } = getOriginalLocation(this.sourcemapChain, { column, line }));
 				code = this.originalCode;
 			} catch (error_: any) {
-				this.options.onwarn(errorInvalidSourcemapForError(error_, this.id, column, line, pos));
+				this.options.onLog(
+					LOGLEVEL_WARN,
+					logInvalidSourcemapForError(error_, this.id, column, line, pos)
+				);
 			}
 			augmentCodeLocation(properties, { column, line }, code!, this.id);
 		}
@@ -1151,18 +1237,33 @@ export default class Module {
 		source: string,
 		declaration: ImportDeclaration | ExportNamedDeclaration | ExportAllDeclaration
 	) {
-		const parsedAssertions = getAssertionsFromImportExportDeclaration(declaration.assertions);
-		const existingAssertions = this.sourcesWithAssertions.get(source);
-		if (existingAssertions) {
-			if (doAssertionsDiffer(existingAssertions, parsedAssertions)) {
-				this.warn(
-					errorInconsistentImportAssertions(existingAssertions, parsedAssertions, source, this.id),
+		const parsedAttributes = getAttributesFromImportExportDeclaration(declaration.attributes);
+		const existingAttributes = this.sourcesWithAttributes.get(source);
+		if (existingAttributes) {
+			if (doAttributesDiffer(existingAttributes, parsedAttributes)) {
+				this.log(
+					LOGLEVEL_WARN,
+					logInconsistentImportAttributes(existingAttributes, parsedAttributes, source, this.id),
 					declaration.start
 				);
 			}
 		} else {
-			this.sourcesWithAssertions.set(source, parsedAssertions);
+			this.sourcesWithAttributes.set(source, parsedAttributes);
 		}
+	}
+
+	private getImportedJsxFactoryVariable(
+		baseName: string,
+		nodeStart: number,
+		importSource: string
+	): Variable {
+		const { id } = this.resolvedIds[importSource!];
+		const module = this.graph.modulesById.get(id)!;
+		const [variable] = module.getVariableForExportName(baseName);
+		if (!variable) {
+			return this.error(logMissingJsxExport(baseName, id, this.id), nodeStart);
+		}
+		return variable;
 	}
 
 	private getVariableFromNamespaceReexports(
@@ -1204,8 +1305,9 @@ export default class Module {
 			if (foundDeclarationList.length === 1) {
 				return [usedDeclaration];
 			}
-			this.options.onwarn(
-				errorNamespaceConflict(
+			this.options.onLog(
+				LOGLEVEL_WARN,
+				logNamespaceConflict(
 					name,
 					this.id,
 					foundDeclarationList.map(([, module]) => module.id)
@@ -1218,8 +1320,9 @@ export default class Module {
 			const foundDeclarationList = [...foundExternalDeclarations];
 			const usedDeclaration = foundDeclarationList[0];
 			if (foundDeclarationList.length > 1) {
-				this.options.onwarn(
-					errorAmbiguousExternalNamespaces(
+				this.options.onLog(
+					LOGLEVEL_WARN,
+					logAmbiguousExternalNamespaces(
 						name,
 						this.id,
 						usedDeclaration.module.id,
@@ -1241,12 +1344,12 @@ export default class Module {
 		for (const module of [this, ...this.exportAllModules]) {
 			if (module instanceof ExternalModule) {
 				const [externalVariable] = module.getVariableForExportName('*');
-				externalVariable.include();
+				externalVariable.includePath(UNKNOWN_PATH, createInclusionContext());
 				this.includedImports.add(externalVariable);
 				externalNamespaces.add(externalVariable);
 			} else if (module.info.syntheticNamedExports) {
 				const syntheticNamespace = module.getSyntheticNamespace();
-				syntheticNamespace.include();
+				syntheticNamespace.includePath(UNKNOWN_PATH, createInclusionContext());
 				this.includedImports.add(syntheticNamespace);
 				syntheticNamespaces.add(syntheticNamespace);
 			}
@@ -1255,14 +1358,14 @@ export default class Module {
 	}
 
 	private includeDynamicImport(node: ImportExpression): void {
-		const resolution = (
-			this.dynamicImports.find(dynamicImport => dynamicImport.node === node) as {
-				resolution: string | Module | ExternalModule | undefined;
-			}
-		).resolution;
+		const resolution = this.dynamicImports.find(
+			dynamicImport => dynamicImport.node === node
+		)!.resolution;
 
 		if (resolution instanceof Module) {
-			resolution.includedDynamicImporters.push(this);
+			if (!resolution.includedDynamicImporters.includes(this)) {
+				resolution.includedDynamicImporters.push(this);
+			}
 
 			const importedNames = this.options.treeshake
 				? node.getDeterministicImportedNames()
@@ -1276,11 +1379,15 @@ export default class Module {
 		}
 	}
 
-	private includeVariable(variable: Variable): void {
-		if (!variable.included) {
-			variable.include();
+	private includeVariable(variable: Variable, path: ObjectPath, context: InclusionContext): void {
+		const { included, module: variableModule } = variable;
+		variable.includePath(path, context);
+		if (included) {
+			if (variableModule instanceof Module && variableModule !== this) {
+				getAndExtendSideEffectModules(variable, this);
+			}
+		} else {
 			this.graph.needsTreeshakingPass = true;
-			const variableModule = variable.module;
 			if (variableModule instanceof Module) {
 				if (!variableModule.isExecuted) {
 					markModuleAndImpureDependenciesAsExecuted(variableModule);
@@ -1297,8 +1404,12 @@ export default class Module {
 		}
 	}
 
-	private includeVariableInModule(variable: Variable): void {
-		this.includeVariable(variable);
+	private includeVariableInModule(
+		variable: Variable,
+		path: ObjectPath,
+		context: InclusionContext
+	): void {
+		this.includeVariable(variable, path, context);
 		const variableModule = variable.module;
 		if (variableModule && variableModule !== this) {
 			this.includedImports.add(variable);
@@ -1306,15 +1417,15 @@ export default class Module {
 	}
 
 	private shimMissingExport(name: string): void {
-		this.options.onwarn(errorShimmedExport(this.id, name));
+		this.options.onLog(LOGLEVEL_WARN, logShimmedExport(this.id, name));
 		this.exports.set(name, MISSING_EXPORT_SHIM_DESCRIPTION);
 	}
 
-	private tryParse(): acorn.Node {
+	private tryParse() {
 		try {
-			return this.graph.contextParse(this.info.code!);
+			return parseAst(this.info.code!, { jsx: this.options.jsx !== false });
 		} catch (error_: any) {
-			return this.error(errorParseError(error_, this.id), error_.pos);
+			return this.error(logModuleParseError(error_, this.id), error_.pos);
 		}
 	}
 }
@@ -1345,5 +1456,4 @@ const copyNameToModulesMap = (
 	searchedNamesAndModules?: Map<string, Set<Module | ExternalModule>>
 ): Map<string, Set<Module | ExternalModule>> | undefined =>
 	searchedNamesAndModules &&
-	// eslint-disable-next-line unicorn/prefer-spread
 	new Map(Array.from(searchedNamesAndModules, ([name, modules]) => [name, new Set(modules)]));

@@ -14,7 +14,7 @@
 
 <script setup lang="ts">
 defineProps<{ selected: unknown; values: unknown[] }>();
-const emit = defineEmits<{ (event: 'select', selected: unknown): void }>();
+const emit = defineEmits<(event: 'select', selected: unknown) => void>();
 </script>
 
 <style scoped>

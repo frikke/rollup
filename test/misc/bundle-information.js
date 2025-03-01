@@ -1,6 +1,6 @@
 const assert = require('node:assert');
 const rollup = require('../../dist/rollup');
-const { loader } = require('../utils.js');
+const { loader } = require('../testHelpers.js');
 
 describe('The bundle object', () => {
 	it('contains information about the generated chunks', () =>
@@ -28,14 +28,14 @@ describe('The bundle object', () => {
 			.then(({ output }) => {
 				assert.deepEqual(
 					output.map(chunk => chunk.fileName),
-					['input1-fffbf648.js', 'input2-ee435193.js', 'generated-shared-4eca6591.js'],
+					['input1-BM2OP0FT.js', 'input2-5N8un_JB.js', 'generated-shared-CbVywpjf.js'],
 					'fileName'
 				);
 				assert.deepEqual(
 					output.map(chunk => chunk.code),
 					[
-						`import { u as used, s as shared } from './generated-shared-4eca6591.js';\n\nconsole.log("input1", used, shared);const out = true;\n\nexport { out };\n`,
-						`import './generated-shared-4eca6591.js';\n\nconsole.log("input2");var input2 = 42;\n\nexport { input2 as default };\n`,
+						`import { u as used, s as shared } from './generated-shared-CbVywpjf.js';\n\nconsole.log("input1", used, shared);const out = true;\n\nexport { out };\n`,
+						`import './generated-shared-CbVywpjf.js';\n\nconsole.log("input2");var input2 = 42;\n\nexport { input2 as default };\n`,
 						`console.log("shared");const used = "used"; var shared = "stuff";\n\nexport { shared as s, used as u };\n`
 					],
 					'code'
@@ -62,14 +62,14 @@ describe('The bundle object', () => {
 				);
 				assert.deepEqual(
 					output.map(chunk => chunk.imports),
-					[['generated-shared-4eca6591.js'], ['generated-shared-4eca6591.js'], []],
+					[['generated-shared-CbVywpjf.js'], ['generated-shared-CbVywpjf.js'], []],
 					'imports'
 				);
 				assert.deepEqual(
 					output.map(chunk => chunk.importedBindings),
 					[
-						{ 'generated-shared-4eca6591.js': ['u', 's'] },
-						{ 'generated-shared-4eca6591.js': [] },
+						{ 'generated-shared-CbVywpjf.js': ['u', 's'] },
+						{ 'generated-shared-CbVywpjf.js': [] },
 						{}
 					],
 					'importedBindings'

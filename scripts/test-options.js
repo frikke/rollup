@@ -1,4 +1,5 @@
 import { readFile } from 'node:fs/promises';
+import { exit } from 'node:process';
 
 const [optionsText, helpText, commandReferenceText] = await Promise.all([
 	readFile(new URL('../docs/configuration-options/index.md', import.meta.url), 'utf8'),
@@ -48,7 +49,7 @@ for (const { long, short } of allCliOptions) {
 }
 
 if (failed) {
-	process.exit(1);
+	exit(1);
 }
 
 let current = null;
@@ -58,7 +59,7 @@ for (const [long, short] of cliOptionsInHelp) {
 			console.error(
 				`Options in help.md are not sorted properly. "${long}" should occur before "${current}".`
 			);
-			process.exit(1);
+			exit(1);
 		}
 		current = long;
 	}
@@ -68,7 +69,7 @@ const splitHelpText = helpText.split('\n');
 for (const line of splitHelpText) {
 	if (line.length > 80) {
 		console.error(`The following line in help.md exceeds the limit of 80 characters:\n${line}`);
-		process.exit(1);
+		exit(1);
 	}
 }
 
@@ -77,10 +78,14 @@ const helpOptionLines = splitHelpText.filter(line => line.startsWith('-'));
 const cliFlagsText = commandReferenceText
 	.split('\n## ')
 	.find(text => text.startsWith('Command line flags'));
-const optionListLines = cliFlagsText
-	.match(/```\n([\S\s]*?)\n```/)[1]
-	.split('\n')
-	.filter(line => line.startsWith('-'));
+if (!cliFlagsText) {
+	throw new Error('Could not find "Command line flags" section.');
+}
+const cliMarkdownSection = cliFlagsText.match(/```\n([\S\s]*?)\n```/);
+if (!cliMarkdownSection) {
+	throw new Error('Could not find markdown section in "Command line flags" section.');
+}
+const optionListLines = cliMarkdownSection[1].split('\n').filter(line => line.startsWith('-'));
 
 for (const [index, line] of helpOptionLines.entries()) {
 	const optionListLine = optionListLines[index];
@@ -88,6 +93,6 @@ for (const [index, line] of helpOptionLines.entries()) {
 		console.error(
 			`The command lines in command-line-interface/index.md do not match help.md. Expected line:\n${line}\n\nReceived line:\n${optionListLine}`
 		);
-		process.exit(1);
+		exit(1);
 	}
 }

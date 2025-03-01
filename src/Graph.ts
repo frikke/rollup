@@ -1,32 +1,34 @@
-import * as acorn from 'acorn';
 import flru from 'flru';
+import { createInclusionContext } from './ast/ExecutionContext';
+import type { ExpressionEntity } from './ast/nodes/shared/Expression';
+import GlobalScope from './ast/scopes/GlobalScope';
+import { EntityPathTracker } from './ast/utils/PathTracker';
 import type ExternalModule from './ExternalModule';
 import Module from './Module';
 import { ModuleLoader, type UnresolvedModule } from './ModuleLoader';
-import GlobalScope from './ast/scopes/GlobalScope';
-import { PathTracker } from './ast/utils/PathTracker';
 import type {
 	ModuleInfo,
 	ModuleJSON,
 	NormalizedInputOptions,
+	ProgramNode,
 	RollupCache,
 	RollupWatcher,
 	SerializablePluginCache,
 	WatchChangeHook
 } from './rollup/types';
-import { PluginDriver } from './utils/PluginDriver';
-import Queue from './utils/Queue';
 import { BuildPhase } from './utils/buildPhase';
+import { analyseModuleExecution } from './utils/executionOrder';
+import { LOGLEVEL_WARN } from './utils/logging';
 import {
 	error,
-	errorCircularDependency,
-	errorImplicitDependantIsNotIncluded,
-	errorMissingExport
-} from './utils/error';
-import { analyseModuleExecution } from './utils/executionOrder';
-import { addAnnotations } from './utils/pureComments';
-import { getPureFunctions } from './utils/pureFunctions';
+	logCircularDependency,
+	logImplicitDependantIsNotIncluded,
+	logMissingExport
+} from './utils/logs';
+import { PluginDriver } from './utils/PluginDriver';
 import type { PureFunctions } from './utils/pureFunctions';
+import { getPureFunctions } from './utils/pureFunctions';
+import Queue from './utils/Queue';
 import { timeEnd, timeStart } from './utils/timers';
 import { markModuleAndImpureDependenciesAsExecuted } from './utils/traverseStaticDependencies';
 
@@ -52,15 +54,15 @@ function normalizeEntryModules(
 }
 
 export default class Graph {
-	readonly acornParser: typeof acorn.Parser;
-	readonly astLru = flru<acorn.Node>(5);
+	readonly astLru = flru<ProgramNode>(5);
 	readonly cachedModules = new Map<string, ModuleJSON>();
-	readonly deoptimizationTracker = new PathTracker();
+	readonly deoptimizationTracker = new EntityPathTracker();
 	entryModules: Module[] = [];
 	readonly fileOperationQueue: Queue;
 	readonly moduleLoader: ModuleLoader;
 	readonly modulesById = new Map<string, Module | ExternalModule>();
 	needsTreeshakingPass = false;
+	readonly newlyIncludedVariableInits = new Set<ExpressionEntity>();
 	phase: BuildPhase = BuildPhase.LOAD_AND_PARSE;
 	readonly pluginDriver: PluginDriver;
 	readonly pureFunctions: PureFunctions;
@@ -71,9 +73,12 @@ export default class Graph {
 	private readonly externalModules: ExternalModule[] = [];
 	private implicitEntryModules: Module[] = [];
 	private modules: Module[] = [];
-	private declare pluginCache?: Record<string, SerializablePluginCache>;
+	declare private pluginCache?: Record<string, SerializablePluginCache>;
 
-	constructor(private readonly options: NormalizedInputOptions, watcher: RollupWatcher | null) {
+	constructor(
+		private readonly options: NormalizedInputOptions,
+		watcher: RollupWatcher | null
+	) {
 		if (options.cache !== false) {
 			if (options.cache?.modules) {
 				for (const module of options.cache.modules) this.cachedModules.set(module.id, module);
@@ -96,7 +101,6 @@ export default class Graph {
 			watcher.onCurrentRun('close', handleClose);
 		}
 		this.pluginDriver = new PluginDriver(this, options, options.plugins, this.pluginCache);
-		this.acornParser = acorn.Parser.extend(...(options.acornInjectPlugins as any[]));
 		this.moduleLoader = new ModuleLoader(this, this.modulesById, this.options, this.pluginDriver);
 		this.fileOperationQueue = new Queue(options.maxParallelFileOps);
 		this.pureFunctions = getPureFunctions(options);
@@ -117,34 +121,6 @@ export default class Graph {
 		timeEnd('mark included statements', 2);
 
 		this.phase = BuildPhase.GENERATE;
-	}
-
-	contextParse(code: string, options: Partial<acorn.Options> = {}): acorn.Node {
-		const onCommentOrig = options.onComment;
-		const comments: acorn.Comment[] = [];
-
-		options.onComment =
-			onCommentOrig && typeof onCommentOrig == 'function'
-				? (block, text, start, end, ...parameters) => {
-						comments.push({ end, start, type: block ? 'Block' : 'Line', value: text });
-						return onCommentOrig.call(options, block, text, start, end, ...parameters);
-				  }
-				: comments;
-
-		const ast = this.acornParser.parse(code, {
-			...(this.options.acorn as unknown as acorn.Options),
-			...options
-		});
-
-		if (typeof onCommentOrig == 'object') {
-			onCommentOrig.push(...comments);
-		}
-
-		options.onComment = onCommentOrig;
-
-		addAnnotations(comments, ast, code);
-
-		return ast;
 	}
 
 	getCache(): RollupCache {
@@ -178,6 +154,7 @@ export default class Graph {
 			throw new Error('You must supply options.input to rollup');
 		}
 		for (const module of this.modulesById.values()) {
+			module.cacheInfoGetters();
 			if (module instanceof Module) {
 				this.modules.push(module);
 			} else {
@@ -193,15 +170,21 @@ export default class Graph {
 		}
 		if (this.options.treeshake) {
 			let treeshakingPass = 1;
+			this.newlyIncludedVariableInits.clear();
 			do {
 				timeStart(`treeshaking pass ${treeshakingPass}`, 3);
 				this.needsTreeshakingPass = false;
 				for (const module of this.modules) {
 					if (module.isExecuted) {
+						module.hasTreeShakingPassStarted = true;
 						if (module.info.moduleSideEffects === 'no-treeshake') {
 							module.includeAllInBundle();
 						} else {
 							module.include();
+						}
+						for (const entity of this.newlyIncludedVariableInits) {
+							this.newlyIncludedVariableInits.delete(entity);
+							entity.include(createInclusionContext(), false);
 						}
 					}
 				}
@@ -224,7 +207,7 @@ export default class Graph {
 		for (const module of this.implicitEntryModules) {
 			for (const dependant of module.implicitlyLoadedAfter) {
 				if (!(dependant.info.isEntry || dependant.isIncluded())) {
-					error(errorImplicitDependantIsNotIncluded(dependant));
+					error(logImplicitDependantIsNotIncluded(dependant));
 				}
 			}
 		}
@@ -233,7 +216,7 @@ export default class Graph {
 	private sortModules(): void {
 		const { orderedModules, cyclePaths } = analyseModuleExecution(this.entryModules);
 		for (const cyclePath of cyclePaths) {
-			this.options.onwarn(errorCircularDependency(cyclePath));
+			this.options.onLog(LOGLEVEL_WARN, logCircularDependency(cyclePath));
 		}
 		this.modules = orderedModules;
 		for (const module of this.modules) {
@@ -249,8 +232,9 @@ export default class Graph {
 					importDescription.name !== '*' &&
 					!importDescription.module.getVariableForExportName(importDescription.name)[0]
 				) {
-					module.warn(
-						errorMissingExport(importDescription.name, module.id, importDescription.module.id),
+					module.log(
+						LOGLEVEL_WARN,
+						logMissingExport(importDescription.name, module.id, importDescription.module.id),
 						importDescription.start
 					);
 				}

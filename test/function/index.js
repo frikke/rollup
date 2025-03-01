@@ -5,7 +5,12 @@ const path = require('node:path');
  */
 // @ts-expect-error not included in types
 const rollup = require('../../dist/rollup');
-const { compareError, compareWarnings, runTestSuiteWithSamples } = require('../utils.js');
+const {
+	compareError,
+	compareLogs,
+	runTestSuiteWithSamples,
+	verifyAstPlugin
+} = require('../testHelpers.js');
 
 function requireWithContext(code, context, exports) {
 	const module = { exports };
@@ -37,7 +42,7 @@ function runCodeSplitTest(codeMap, entryId, configContext) {
 					code,
 					{ require: requireFromOutputVia(outputId), ...context },
 					(exportsMap[outputId] = {})
-			  ));
+				));
 	};
 
 	const context = { assert, ...configContext };
@@ -65,14 +70,29 @@ runTestSuiteWithSamples(
 					await config.before();
 				}
 				process.chdir(directory);
+				const logs = [];
 				const warnings = [];
+				const plugins =
+					config.verifyAst === false
+						? config.options?.plugins
+						: config.options?.plugins === undefined
+							? verifyAstPlugin
+							: Array.isArray(config.options.plugins)
+								? [...config.options.plugins, verifyAstPlugin]
+								: config.options.plugins;
 
 				return rollup
 					.rollup({
 						input: path.join(directory, 'main.js'),
-						onwarn: warning => warnings.push(warning),
+						onLog: (level, log) => {
+							logs.push({ level, ...log });
+							if (level === 'warn') {
+								warnings.push(log);
+							}
+						},
 						strictDeprecations: true,
-						...config.options
+						...config.options,
+						plugins
 					})
 					.then(bundle => {
 						let unintendedError;
@@ -161,9 +181,14 @@ runTestSuiteWithSamples(
 											}
 										}
 
-										if (config.warnings) {
+										if (config.logs) {
+											if (config.warnings) {
+												throw new Error('Cannot use both "logs" and "warnings" in a test');
+											}
+											compareLogs(logs, config.logs);
+										} else if (config.warnings) {
 											if (Array.isArray(config.warnings)) {
-												compareWarnings(warnings, config.warnings);
+												compareLogs(warnings, config.warnings);
 											} else {
 												config.warnings(warnings);
 											}
